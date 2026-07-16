@@ -22,6 +22,7 @@ import BlogPage from './pages/BlogPage';
 import BlogPostPage from './pages/BlogPostPage';
 import BlogSubmitPage from './pages/BlogSubmitPage';
 import AwardPage from './pages/AwardPage';
+import OrganizationSetupPage from './pages/OrganizationSetupPage';
 
 const NO_CHROME = ['/login', '/register'];
 
@@ -60,6 +61,7 @@ function AppShell() {
           <Route path="/blog" element={<BlogPage />} />
           <Route path="/blog/submit" element={<BlogSubmitPage />} />
           <Route path="/blog/award" element={<AwardPage />} />
+          <Route path="/organization/setup" element={<OrganizationSetupPage />} />
           <Route path="/blog/:slug" element={<BlogPostPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
