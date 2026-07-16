@@ -94,6 +94,7 @@ export default function AccountPage() {
   const TIER_LABELS: Record<string, string> = {
     free: 'Free',
     founding_member: 'Founding Member',
+    growth_member: 'Growth Member',
     premium: 'Premium',
     white_glove: 'White Glove Engagement',
   };

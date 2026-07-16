@@ -169,7 +169,7 @@ export default function PricingPage() {
 
   const TIER_ID_MAP: Record<string, string> = {
     founding_member: 'founding_member',
-    growth_member: 'premium',
+    growth_member: 'growth_member',
     premium: 'premium',
   };
 

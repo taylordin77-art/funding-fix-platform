@@ -14,7 +14,7 @@ const RESOURCE_ICONS: Record<string, React.ComponentType<{ size?: number; classN
   tool: Wrench,
 };
 
-const TIER_ORDER = { free: 0, founding_member: 1, premium: 2, white_glove: 3 };
+const TIER_ORDER = { free: 0, founding_member: 1, growth_member: 2, premium: 3, white_glove: 4 };
 
 function canAccess(userTier: string | undefined, minTier: string): boolean {
   const userLevel = TIER_ORDER[userTier as keyof typeof TIER_ORDER] ?? -1;

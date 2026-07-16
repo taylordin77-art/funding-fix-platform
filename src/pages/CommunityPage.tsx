@@ -590,6 +590,7 @@ export default function CommunityPage() {
 
   const isMember = profile && (
     profile.membership_tier === 'founding_member' ||
+    profile.membership_tier === 'growth_member' ||
     profile.membership_tier === 'premium' ||
     profile.membership_tier === 'white_glove' ||
     profile.role === 'admin'

@@ -1,5 +1,5 @@
 export type UserRole = 'free' | 'member' | 'client' | 'admin';
-export type MembershipTier = 'free' | 'founding_member' | 'premium' | 'white_glove';
+export type MembershipTier = 'free' | 'founding_member' | 'growth_member' | 'premium' | 'white_glove';
 export type Pillar = 'clarity' | 'structure' | 'health' | 'impact' | 'funding' | 'transformation';
 
 export interface Profile {

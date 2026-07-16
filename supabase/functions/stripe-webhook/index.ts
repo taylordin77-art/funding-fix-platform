@@ -18,8 +18,8 @@ const supabase = createClient(
 
 const TIER_MAP: Record<string, string> = {
   founding_member_monthly: 'founding_member',
-  premium_monthly: 'premium',
-  premium_annual: 'premium',
+  premium_monthly:         'growth_member',
+  premium_annual:          'premium',
 };
 
 Deno.serve(async (req: Request) => {

@@ -334,6 +334,7 @@ export default function AdminPage() {
                             <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={
                               c.membership_tier === 'white_glove' ? { backgroundColor: 'rgba(212,168,67,0.15)', color: '#D4A843' } :
                               c.membership_tier === 'premium' ? { backgroundColor: 'rgba(28,116,134,0.15)', color: '#1C7486' } :
+                              c.membership_tier === 'growth_member' ? { backgroundColor: 'rgba(28,116,134,0.12)', color: '#1C7486' } :
                               c.membership_tier === 'founding_member' ? { backgroundColor: 'rgba(28,116,134,0.1)', color: '#1C7486' } :
                               { backgroundColor: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }
                             }>
