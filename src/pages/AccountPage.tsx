@@ -1,12 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Building, Phone, Save, LogOut, Shield, CheckCircle, Download, Eye, EyeOff, Lock, Building2, Plus, Link2, BarChart2 } from 'lucide-react';
+import { User, Building, Phone, Save, LogOut, Shield, CheckCircle, Download, Eye, EyeOff, Lock } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { AnimatedSection } from '../components/AnimatedSection';
 import { FunderReadyBadge } from '../components/GlassPanelComponents';
-import type { Organization, OrganizationMember } from '../lib/types';
-import { ORG_ROLE_LABELS, NONPROFIT_STATUSES } from '../lib/types';
 
 const BRAND = { teal: '#1C7486', black: '#0A0A0A', gold: '#D4A843', white: '#FFFFFF' };
 
@@ -18,7 +16,7 @@ const FOCUS_AREAS = [
 
 const BUDGET_RANGES = ['Under $100K', '$100K to $500K', '$500K to $1M', '$1M to $5M', 'Over $5M'];
 
-type Tab = 'account' | 'profile' | 'funder_ready' | 'my_organization';
+type Tab = 'account' | 'profile' | 'funder_ready';
 
 const inputStyle = {
   background: 'rgba(255,255,255,0.04)',
@@ -31,8 +29,6 @@ export default function AccountPage() {
   const { user, profile, signOut, refreshProfile } = useAuth();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('account');
-  const [orgData, setOrgData] = useState<{ org: Organization; member: OrganizationMember; assessmentCount: number; latestAssessmentDate: string | null } | null>(null);
-  const [orgLoading, setOrgLoading] = useState(false);
   const [form, setForm] = useState({
     full_name: profile?.full_name || '',
     organization_name: profile?.organization_name || '',
@@ -60,48 +56,6 @@ export default function AccountPage() {
   const funderReady = profile.funder_ready_approved;
   const funderScore = profile.funder_ready_score || 0;
   const qualifies = funderScore >= 120;
-
-  // Load org membership when my_organization tab is opened
-  useEffect(() => {
-    if (tab !== 'my_organization' || !user) return;
-    setOrgLoading(true);
-    (async () => {
-      const { data: memberRows } = await supabase
-        .from('organization_members')
-        .select('*, organizations(*)')
-        .eq('user_id', user.id)
-        .eq('membership_status', 'active')
-        .order('joined_at', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-
-      if (!memberRows) { setOrgData(null); setOrgLoading(false); return; }
-
-      const orgRecord = (memberRows as { organizations: Organization } & OrganizationMember).organizations;
-      const memberRecord = memberRows as OrganizationMember;
-
-      const { count } = await supabase
-        .from('assessments')
-        .select('id', { count: 'exact', head: true })
-        .eq('organization_id', orgRecord.id);
-
-      const { data: latestA } = await supabase
-        .from('assessments')
-        .select('created_at')
-        .eq('organization_id', orgRecord.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      setOrgData({
-        org: orgRecord,
-        member: memberRecord,
-        assessmentCount: count || 0,
-        latestAssessmentDate: latestA ? latestA.created_at : null,
-      });
-      setOrgLoading(false);
-    })();
-  }, [tab, user]);
 
   async function handleSaveAccount(e: React.FormEvent) {
     e.preventDefault();
@@ -201,7 +155,6 @@ export default function AccountPage() {
               { id: 'account' as Tab, label: 'Account' },
               { id: 'profile' as Tab, label: 'Organization Profile' },
               { id: 'funder_ready' as Tab, label: 'Funder Ready Status' },
-              { id: 'my_organization' as Tab, label: 'My Organization' },
             ].map(t => (
               <button
                 key={t.id}
@@ -465,98 +418,6 @@ export default function AccountPage() {
               </div>
             </AnimatedSection>
           </div>
-        )}
-
-        {/* My Organization Tab */}
-        {tab === 'my_organization' && (
-          <AnimatedSection direction="up">
-            <div className="card-premium p-8 space-y-5">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: BRAND.teal + '20' }}>
-                  <Building2 size={18} style={{ color: BRAND.teal }} />
-                </div>
-                <h2 className="font-bold text-white text-lg">My Organization</h2>
-              </div>
-
-              {orgLoading && (
-                <div className="flex items-center justify-center py-10">
-                  <div className="w-5 h-5 border-2 rounded-full animate-spin" style={{ borderColor: BRAND.teal, borderTopColor: 'transparent' }} />
-                </div>
-              )}
-
-              {!orgLoading && !orgData && (
-                <div className="text-center py-8">
-                  <div className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                    <Building2 size={24} style={{ color: 'rgba(255,255,255,0.2)' }} />
-                  </div>
-                  <p className="font-semibold text-white mb-1">No Organization Yet</p>
-                  <p className="text-sm mb-5" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                    Register your nonprofit to unlock the Nonprofit Operating System.
-                  </p>
-                  <button onClick={() => navigate('/organization/setup')} className="btn-primary">
-                    <Plus size={14} />
-                    Set Up Organization
-                  </button>
-                </div>
-              )}
-
-              {!orgLoading && orgData && (
-                <div className="space-y-4">
-                  {/* Org summary grid */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="p-4 rounded-xl col-span-2" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div className="text-xs uppercase tracking-widest mb-1" style={{ color: 'rgba(255,255,255,0.3)' }}>Organization Name</div>
-                      <div className="font-bold text-white text-base leading-tight">{orgData.org.organization_name}</div>
-                    </div>
-                    <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div className="text-xs uppercase tracking-widest mb-1" style={{ color: 'rgba(255,255,255,0.3)' }}>Your Role</div>
-                      <div className="font-semibold text-sm" style={{ color: BRAND.teal }}>
-                        {ORG_ROLE_LABELS[orgData.member.organization_role]}
-                      </div>
-                    </div>
-                    <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div className="text-xs uppercase tracking-widest mb-1" style={{ color: 'rgba(255,255,255,0.3)' }}>Stage</div>
-                      <div className="font-semibold text-white text-sm capitalize">
-                        {orgData.org.organization_stage || <span style={{ color: 'rgba(255,255,255,0.25)' }}>Not set</span>}
-                      </div>
-                    </div>
-                    <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div className="text-xs uppercase tracking-widest mb-1" style={{ color: 'rgba(255,255,255,0.3)' }}>Nonprofit Status</div>
-                      <div className="font-semibold text-white text-sm">
-                        {orgData.org.nonprofit_status
-                          ? NONPROFIT_STATUSES.find(s => s.value === orgData.org.nonprofit_status)?.label.split(' — ')[0]
-                          : <span style={{ color: 'rgba(255,255,255,0.25)' }}>Not set</span>}
-                      </div>
-                    </div>
-                    <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div className="text-xs uppercase tracking-widest mb-1" style={{ color: 'rgba(255,255,255,0.3)' }}>Assessments</div>
-                      <div className="font-bold text-white text-xl">{orgData.assessmentCount}</div>
-                    </div>
-                    <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div className="text-xs uppercase tracking-widest mb-1" style={{ color: 'rgba(255,255,255,0.3)' }}>Last Assessment</div>
-                      <div className="font-semibold text-white text-sm">
-                        {orgData.latestAssessmentDate
-                          ? new Date(orgData.latestAssessmentDate).toLocaleDateString()
-                          : <span style={{ color: 'rgba(255,255,255,0.25)' }}>None yet</span>}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Action buttons */}
-                  <div className="flex flex-col sm:flex-row gap-3 pt-2">
-                    <button onClick={() => navigate('/organization/setup')} className="btn-primary flex-1 justify-center">
-                      <BarChart2 size={14} />
-                      Edit Organization Profile
-                    </button>
-                    <button onClick={() => navigate('/organization/setup')} className="btn-ghost flex-1 justify-center">
-                      <Link2 size={14} />
-                      Connect Existing Assessment
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </AnimatedSection>
         )}
       </div>
     </div>
