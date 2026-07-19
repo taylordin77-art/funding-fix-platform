@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useLocation, Navigate } from 'react-router-dom';
-import { Building2, FileText, Globe, MapPin, Users, DollarSign, Info, ClipboardList } from 'lucide-react';
+import { Building2, FileText, Globe, MapPin, Users, DollarSign, Info, ClipboardList, CheckCircle2, Link2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -126,6 +126,7 @@ export default function OrganizationSetupPage() {
   const [eligibleAssessments, setEligibleAssessments] = useState<EligibleAssessment[]>([]);
   const [loadingAssessments, setLoadingAssessments] = useState(false);
   const [assessmentLoadError, setAssessmentLoadError] = useState('');
+  const [selectedAssessmentId, setSelectedAssessmentId] = useState('');
 
   if (loading) {
     return (
@@ -166,6 +167,7 @@ export default function OrganizationSetupPage() {
     if (rawEmail === '') {
       setAssessmentLoadError('We could not verify the email address for your account.');
       setEligibleAssessments([]);
+      setSelectedAssessmentId('');
       setLoadingAssessments(false);
       return;
     }
@@ -173,6 +175,7 @@ export default function OrganizationSetupPage() {
     setLoadingAssessments(true);
     setAssessmentLoadError('');
     setEligibleAssessments([]);
+    setSelectedAssessmentId('');
 
     try {
       const { data, error } = await supabase
@@ -185,11 +188,14 @@ export default function OrganizationSetupPage() {
 
       if (error) throw error;
 
-      setEligibleAssessments((data as EligibleAssessment[]) ?? []);
+      const rows = (data as EligibleAssessment[]) ?? [];
+      setSelectedAssessmentId('');
+      setEligibleAssessments(rows);
     } catch (err) {
       console.error('loadEligibleAssessments failed:', err);
       setAssessmentLoadError('We could not load your eligible assessments. Please try again.');
       setEligibleAssessments([]);
+      setSelectedAssessmentId('');
     } finally {
       setLoadingAssessments(false);
     }
@@ -748,35 +754,106 @@ export default function OrganizationSetupPage() {
               )}
 
               {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length > 0 && (
-                <div className="space-y-3">
-                  {eligibleAssessments.map(a => (
-                    <div
-                      key={a.id}
-                      className="rounded-xl p-4"
-                      style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                        <div className="text-sm font-semibold text-white">
-                          {a.organization_name && a.organization_name.trim() !== ''
-                            ? a.organization_name
-                            : 'Unnamed Organization'}
+                <fieldset className="space-y-3 m-0 p-0 border-0">
+                  <legend className="sr-only">Select an eligible assessment to connect</legend>
+                  {eligibleAssessments.map(a => {
+                    const selected = selectedAssessmentId === a.id;
+                    const inputId = `eligible-assessment-${a.id}`;
+                    return (
+                      <label
+                        key={a.id}
+                        htmlFor={inputId}
+                        className="block rounded-xl p-4 cursor-pointer transition-all"
+                        style={{
+                          backgroundColor: selected ? 'rgba(28,116,134,0.12)' : 'rgba(255,255,255,0.03)',
+                          border: selected
+                            ? '1px solid rgba(28,116,134,0.6)'
+                            : '1px solid rgba(255,255,255,0.08)',
+                          boxShadow: selected ? '0 0 0 1px rgba(28,116,134,0.4)' : 'none',
+                        }}
+                      >
+                        <input
+                          id={inputId}
+                          type="radio"
+                          name="eligible-assessment"
+                          value={a.id}
+                          checked={selected}
+                          onChange={() => setSelectedAssessmentId(a.id)}
+                          className="sr-only"
+                          aria-describedby={`${inputId}-selected-badge`}
+                        />
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0"
+                              aria-hidden="true"
+                              style={{
+                                border: selected ? '5px solid #1C7486' : '2px solid rgba(255,255,255,0.3)',
+                                backgroundColor: 'transparent',
+                              }}
+                            />
+                            <span className="text-sm font-semibold text-white truncate">
+                              {a.organization_name && a.organization_name.trim() !== ''
+                                ? a.organization_name
+                                : 'Unnamed Organization'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {selected && (
+                              <span
+                                id={`${inputId}-selected-badge`}
+                                className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md"
+                                style={{ backgroundColor: 'rgba(28,116,134,0.2)', color: BRAND.teal }}
+                              >
+                                <CheckCircle2 size={12} aria-hidden="true" />
+                                Selected
+                              </span>
+                            )}
+                            <span className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                              {a.created_at ? new Date(a.created_at).toLocaleDateString() : '—'}
+                            </span>
+                          </div>
                         </div>
-                        <div className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                          {a.created_at ? new Date(a.created_at).toLocaleDateString() : '—'}
+                        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                          <div>
+                            <span style={{ color: 'rgba(255,255,255,0.4)' }}>Score:</span>{' '}
+                            {a.total_score !== null && a.total_score !== undefined ? a.total_score : 'Not available'}
+                          </div>
+                          <div>
+                            <span style={{ color: 'rgba(255,255,255,0.4)' }}>Status:</span>{' '}
+                            {a.status && a.status.trim() !== '' ? a.status : 'Unknown'}
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs" style={{ color: 'rgba(255,255,255,0.55)' }}>
-                        <div>
-                          <span style={{ color: 'rgba(255,255,255,0.4)' }}>Score:</span>{' '}
-                          {a.total_score !== null && a.total_score !== undefined ? a.total_score : 'Not available'}
-                        </div>
-                        <div>
-                          <span style={{ color: 'rgba(255,255,255,0.4)' }}>Status:</span>{' '}
-                          {a.status && a.status.trim() !== '' ? a.status : 'Unknown'}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                      </label>
+                    );
+                  })}
+                </fieldset>
+              )}
+
+              {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length > 0 && (
+                <div className="mt-5">
+                  <p
+                    className="text-sm flex items-center gap-2"
+                    style={{ color: selectedAssessmentId ? BRAND.teal : 'rgba(255,255,255,0.5)' }}
+                    aria-live="polite"
+                  >
+                    {selectedAssessmentId
+                      ? 'Assessment selected and ready to connect.'
+                      : 'Select one assessment to continue.'}
+                  </p>
+
+                  <button
+                    type="button"
+                    disabled
+                    className="btn-primary w-full mt-4 opacity-60 cursor-not-allowed flex items-center justify-center gap-2"
+                    aria-disabled="true"
+                  >
+                    <Link2 size={15} />
+                    Connect Assessment to Organization
+                  </button>
+                  <p className="text-xs mt-2 text-center" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                    Assessment connection will be activated in the next development step.
+                  </p>
                 </div>
               )}
             </div>
