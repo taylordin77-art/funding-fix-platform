@@ -59,6 +59,13 @@ interface FormState {
   nonprofit_status: string;
 }
 
+type CreatedOrganization = {
+  id: string;
+  organization_name: string;
+  owner_user_id?: string | null;
+  created_at?: string | null;
+};
+
 const INITIAL_FORM: FormState = {
   organization_name: '',
   legal_name: '',
@@ -177,9 +184,13 @@ export default function OrganizationSetupPage() {
 
       if (error) throw error;
 
-      const org = data as { id?: string; organization_name?: string } | null;
-      setCreatedOrganizationId(org?.id ?? '');
-      setCreatedOrganizationName(org?.organization_name ?? trimmedName);
+      const org = data as CreatedOrganization | null;
+      if (!org || !org.id || !org.organization_name) {
+        console.error('create_user_organization returned invalid data:', data);
+        throw new Error('Organization creation returned no valid row.');
+      }
+      setCreatedOrganizationId(org.id);
+      setCreatedOrganizationName(org.organization_name);
       setStubMessage(true);
     } catch (err) {
       console.error('create_user_organization failed:', err);
