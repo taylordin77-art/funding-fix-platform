@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useLocation, Navigate } from 'react-router-dom';
-import { Building2, FileText, Globe, MapPin, Users, DollarSign, Info, ClipboardList, CheckCircle2, Link2 } from 'lucide-react';
+import { Building2, FileText, Globe, MapPin, Users, DollarSign, Info, ClipboardList, CheckCircle2, Link2, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -76,6 +76,14 @@ type EligibleAssessment = {
   email: string | null;
 };
 
+type ClaimedAssessment = {
+  id: string;
+  total_score: number | null;
+  status: string | null;
+  organization_id: string;
+  user_id: string;
+};
+
 const INITIAL_FORM: FormState = {
   organization_name: '',
   legal_name: '',
@@ -127,6 +135,11 @@ export default function OrganizationSetupPage() {
   const [loadingAssessments, setLoadingAssessments] = useState(false);
   const [assessmentLoadError, setAssessmentLoadError] = useState('');
   const [selectedAssessmentId, setSelectedAssessmentId] = useState('');
+  const [claimingAssessment, setClaimingAssessment] = useState(false);
+  const [assessmentClaimError, setAssessmentClaimError] = useState('');
+  const [claimedAssessmentId, setClaimedAssessmentId] = useState('');
+  const [claimedAssessmentScore, setClaimedAssessmentScore] = useState<number | null>(null);
+  const [claimedAssessmentStatus, setClaimedAssessmentStatus] = useState('');
 
   if (loading) {
     return (
@@ -201,6 +214,50 @@ export default function OrganizationSetupPage() {
     }
   }
 
+  async function handleClaimAssessment() {
+    setAssessmentClaimError('');
+    if (claimingAssessment) return;
+    if (!selectedAssessmentId) {
+      setAssessmentClaimError('Select an assessment before continuing.');
+      return;
+    }
+    if (!createdOrganizationId) {
+      setAssessmentClaimError('We could not identify the organization. Please refresh the page and try again.');
+      return;
+    }
+    setClaimingAssessment(true);
+    try {
+      const { data, error } = await supabase.rpc('claim_anonymous_assessment', {
+        p_assessment_id: selectedAssessmentId,
+        p_organization_id: createdOrganizationId,
+      });
+      if (error) throw error;
+      const claimed = data as ClaimedAssessment | null;
+      if (!claimed || !claimed.id || !claimed.organization_id || !claimed.user_id) {
+        console.error('claim_anonymous_assessment returned invalid data:', data);
+        throw new Error('Assessment claim returned no valid row.');
+      }
+      setClaimedAssessmentId(claimed.id);
+      setClaimedAssessmentScore(claimed.total_score);
+      setClaimedAssessmentStatus(claimed.status ?? 'Unknown');
+      setAssessmentClaimError('');
+    } catch (err) {
+      console.error('claim_anonymous_assessment failed:', err);
+      const code = (err as { code?: string } | null)?.code;
+      let message = 'We could not connect the assessment. Please try again.';
+      if (code === 'P0009') {
+        message = 'This assessment has already been connected to an organization.';
+      } else if (code === 'P0010') {
+        message = 'This assessment was completed with a different email address.';
+      } else if (code === 'P0007') {
+        message = 'You do not have permission to connect assessments to this organization.';
+      }
+      setAssessmentClaimError(message);
+    } finally {
+      setClaimingAssessment(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (saving) return;
@@ -258,6 +315,12 @@ export default function OrganizationSetupPage() {
       setSaving(false);
     }
   }
+
+  const canClaim =
+    selectedAssessmentId !== '' &&
+    createdOrganizationId !== '' &&
+    !claimingAssessment &&
+    claimedAssessmentId === '';
 
   return (
     <div className="min-h-screen py-12 px-4" style={{ backgroundColor: '#0A0A0A' }}>
@@ -753,7 +816,7 @@ export default function OrganizationSetupPage() {
                 </div>
               )}
 
-              {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length > 0 && (
+              {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length > 0 && !claimedAssessmentId && (
                 <fieldset className="space-y-3 m-0 p-0 border-0">
                   <legend className="sr-only">Select an eligible assessment to connect</legend>
                   {eligibleAssessments.map(a => {
@@ -830,7 +893,44 @@ export default function OrganizationSetupPage() {
                 </fieldset>
               )}
 
-              {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length > 0 && (
+              {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length > 0 && claimedAssessmentId && (
+                <div
+                  className="mt-5 rounded-xl p-5"
+                  style={{
+                    backgroundColor: 'rgba(28,116,134,0.1)',
+                    border: '1px solid rgba(28,116,134,0.3)',
+                  }}
+                  aria-live="polite"
+                >
+                  <div className="flex items-center gap-2 mb-3">
+                    <CheckCircle2 size={18} style={{ color: BRAND.teal }} />
+                    <h3 className="text-base font-bold text-white">Assessment Connected</h3>
+                  </div>
+                  <p className="text-sm mb-4" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                    Your assessment is now connected to {createdOrganizationName}.
+                  </p>
+                  <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs mb-4" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                    <div>
+                      <span style={{ color: 'rgba(255,255,255,0.4)' }}>Total Score:</span>{' '}
+                      {claimedAssessmentScore !== null && claimedAssessmentScore !== undefined ? claimedAssessmentScore : 'Not available'}
+                    </div>
+                    <div>
+                      <span style={{ color: 'rgba(255,255,255,0.4)' }}>Status:</span>{' '}
+                      {claimedAssessmentStatus}
+                    </div>
+                  </div>
+                  <Link
+                    to={`/results/${claimedAssessmentId}`}
+                    className="btn-primary inline-flex items-center gap-2 text-sm"
+                  >
+                    <FileText size={15} />
+                    View Assessment Results
+                    <ArrowRight size={14} />
+                  </Link>
+                </div>
+              )}
+
+              {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length > 0 && !claimedAssessmentId && (
                 <div className="mt-5">
                   <p
                     className="text-sm flex items-center gap-2"
@@ -842,18 +942,31 @@ export default function OrganizationSetupPage() {
                       : 'Select one assessment to continue.'}
                   </p>
 
+                  {assessmentClaimError && (
+                    <div
+                      className="rounded-xl px-4 py-3 mt-3 text-sm flex items-start gap-2.5"
+                      style={{
+                        backgroundColor: 'rgba(212,168,67,0.08)',
+                        border: '1px solid rgba(212,168,67,0.25)',
+                        color: BRAND.gold,
+                      }}
+                      role="alert"
+                    >
+                      <Info size={15} className="flex-shrink-0 mt-0.5" />
+                      {assessmentClaimError}
+                    </div>
+                  )}
+
                   <button
                     type="button"
-                    disabled
-                    className="btn-primary w-full mt-4 opacity-60 cursor-not-allowed flex items-center justify-center gap-2"
-                    aria-disabled="true"
+                    onClick={handleClaimAssessment}
+                    disabled={!canClaim}
+                    aria-busy={claimingAssessment}
+                    className="btn-primary w-full mt-4 flex items-center justify-center gap-2"
                   >
                     <Link2 size={15} />
-                    Connect Assessment to Organization
+                    {claimingAssessment ? 'Connecting Assessment...' : 'Connect Assessment to Organization'}
                   </button>
-                  <p className="text-xs mt-2 text-center" style={{ color: 'rgba(255,255,255,0.4)' }}>
-                    Assessment connection will be activated in the next development step.
-                  </p>
                 </div>
               )}
             </div>
