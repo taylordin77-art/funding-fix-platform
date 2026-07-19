@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { Building2, FileText, Globe, MapPin, Users, DollarSign, Info } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { supabase } from '../lib/supabase';
 import { AnimatedSection } from '../components/AnimatedSection';
 
 const BRAND = { teal: '#1C7486', gold: '#D4A843' };
@@ -100,6 +101,10 @@ export default function OrganizationSetupPage() {
   const location = useLocation();
 
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
+  const [saving, setSaving] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [createdOrganizationName, setCreatedOrganizationName] = useState('');
+  const [createdOrganizationId, setCreatedOrganizationId] = useState('');
   const [stubMessage, setStubMessage] = useState(false);
 
   if (loading) {
@@ -119,9 +124,74 @@ export default function OrganizationSetupPage() {
       setForm(prev => ({ ...prev, [field]: e.target.value }));
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  function toText(value: string): string | null {
+    const trimmed = value.trim();
+    return trimmed === '' ? null : trimmed;
+  }
+
+  function toNumber(value: string): number | null {
+    const trimmed = value.trim();
+    if (trimmed === '') return null;
+    const num = Number(trimmed);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function toSelect(value: string): string | null {
+    const trimmed = value.trim();
+    return trimmed === '' ? null : trimmed;
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setStubMessage(true);
+    if (saving) return;
+
+    const trimmedName = form.organization_name.trim();
+    if (trimmedName === '') {
+      setSubmitError('Please enter an organization name to continue.');
+      return;
+    }
+
+    setSubmitError('');
+    setSaving(true);
+
+    try {
+      const { data, error } = await supabase.rpc('create_user_organization', {
+        p_organization_name: trimmedName,
+        p_legal_name: toText(form.legal_name),
+        p_ein: toText(form.ein),
+        p_mission: toText(form.mission),
+        p_vision: toText(form.vision),
+        p_website: toText(form.website),
+        p_cause_area: toText(form.cause_area),
+        p_primary_population: toText(form.primary_population),
+        p_service_area: toText(form.service_area),
+        p_city: toText(form.city),
+        p_state: toText(form.state),
+        p_annual_budget: toNumber(form.annual_budget),
+        p_annual_revenue: toNumber(form.annual_revenue),
+        p_staff_count: toNumber(form.staff_count),
+        p_board_member_count: toNumber(form.board_member_count),
+        p_organization_stage: toSelect(form.organization_stage),
+        p_nonprofit_status: toSelect(form.nonprofit_status),
+      });
+
+      if (error) throw error;
+
+      const org = data as { id?: string; organization_name?: string } | null;
+      setCreatedOrganizationId(org?.id ?? '');
+      setCreatedOrganizationName(org?.organization_name ?? trimmedName);
+      setStubMessage(true);
+    } catch (err) {
+      console.error('create_user_organization failed:', err);
+      const code = (err as { code?: string } | null)?.code;
+      setSubmitError(
+        code === 'P0005'
+          ? 'An organization with this name and EIN already exists in your account.'
+          : 'We could not create your organization. Please review the information and try again.'
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -471,8 +541,8 @@ export default function OrganizationSetupPage() {
               <span style={{ color: BRAND.gold }}>*</span> Required field
             </p>
 
-            {/* Stub feedback */}
-            {stubMessage && (
+            {/* Success message */}
+            {stubMessage && createdOrganizationName && (
               <div
                 className="rounded-xl px-4 py-3 mb-5 text-sm flex items-start gap-2.5"
                 style={{
@@ -483,7 +553,27 @@ export default function OrganizationSetupPage() {
                 role="status"
               >
                 <Info size={15} className="flex-shrink-0 mt-0.5" />
-                Organization saving will be connected in the next development step.
+                <div>
+                  <div className="font-semibold">Organization Created</div>
+                  <div className="mt-0.5 text-white/80">{createdOrganizationName}</div>
+                  <div className="mt-0.5">Your organization role: Owner</div>
+                </div>
+              </div>
+            )}
+
+            {/* Inline error */}
+            {submitError && (
+              <div
+                className="rounded-xl px-4 py-3 mb-5 text-sm flex items-start gap-2.5"
+                style={{
+                  backgroundColor: 'rgba(212,168,67,0.08)',
+                  border: '1px solid rgba(212,168,67,0.25)',
+                  color: BRAND.gold,
+                }}
+                role="alert"
+              >
+                <Info size={15} className="flex-shrink-0 mt-0.5" />
+                {submitError}
               </div>
             )}
 
@@ -496,9 +586,14 @@ export default function OrganizationSetupPage() {
               >
                 Cancel
               </button>
-              <button type="submit" className="btn-primary">
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={saving}
+                aria-busy={saving}
+              >
                 <Building2 size={15} />
-                Create Organization
+                {saving ? 'Creating Organization...' : 'Create Organization'}
               </button>
             </div>
           </form>
