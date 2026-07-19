@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useLocation, Navigate } from 'react-router-dom';
-import { Building2, FileText, Globe, MapPin, Users, DollarSign, Info } from 'lucide-react';
+import { Building2, FileText, Globe, MapPin, Users, DollarSign, Info, ClipboardList } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 import { AnimatedSection } from '../components/AnimatedSection';
@@ -66,6 +67,15 @@ type CreatedOrganization = {
   created_at?: string | null;
 };
 
+type EligibleAssessment = {
+  id: string;
+  organization_name: string | null;
+  total_score: number | null;
+  status: string | null;
+  created_at: string;
+  email: string | null;
+};
+
 const INITIAL_FORM: FormState = {
   organization_name: '',
   legal_name: '',
@@ -113,6 +123,9 @@ export default function OrganizationSetupPage() {
   const [createdOrganizationName, setCreatedOrganizationName] = useState('');
   const [createdOrganizationId, setCreatedOrganizationId] = useState('');
   const [stubMessage, setStubMessage] = useState(false);
+  const [eligibleAssessments, setEligibleAssessments] = useState<EligibleAssessment[]>([]);
+  const [loadingAssessments, setLoadingAssessments] = useState(false);
+  const [assessmentLoadError, setAssessmentLoadError] = useState('');
 
   if (loading) {
     return (
@@ -146,6 +159,40 @@ export default function OrganizationSetupPage() {
   function toSelect(value: string): string | null {
     const trimmed = value.trim();
     return trimmed === '' ? null : trimmed;
+  }
+
+  async function loadEligibleAssessments() {
+    const rawEmail = (user?.email ?? '').trim().toLowerCase();
+    if (rawEmail === '') {
+      setAssessmentLoadError('We could not verify the email address for your account.');
+      setEligibleAssessments([]);
+      setLoadingAssessments(false);
+      return;
+    }
+
+    setLoadingAssessments(true);
+    setAssessmentLoadError('');
+    setEligibleAssessments([]);
+
+    try {
+      const { data, error } = await supabase
+        .from('assessments')
+        .select('id, organization_name, total_score, status, created_at, email')
+        .is('user_id', null)
+        .is('organization_id', null)
+        .ilike('email', rawEmail)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      setEligibleAssessments((data as EligibleAssessment[]) ?? []);
+    } catch (err) {
+      console.error('loadEligibleAssessments failed:', err);
+      setAssessmentLoadError('We could not load your eligible assessments. Please try again.');
+      setEligibleAssessments([]);
+    } finally {
+      setLoadingAssessments(false);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -192,6 +239,7 @@ export default function OrganizationSetupPage() {
       setCreatedOrganizationId(org.id);
       setCreatedOrganizationName(org.organization_name);
       setStubMessage(true);
+      loadEligibleAssessments();
     } catch (err) {
       console.error('create_user_organization failed:', err);
       const code = (err as { code?: string } | null)?.code;
@@ -631,6 +679,109 @@ export default function OrganizationSetupPage() {
             </div>
           </div>
         </AnimatedSection>
+
+        {/* Eligible assessments (only after organization creation succeeds) */}
+        {stubMessage && createdOrganizationId && (
+          <AnimatedSection direction="up" delay={100}>
+            <div className="card-premium p-7 mt-6">
+              <div className="flex items-start gap-4 mb-5">
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5"
+                  style={{ backgroundColor: 'rgba(28,116,134,0.14)', border: '1px solid rgba(28,116,134,0.22)' }}
+                >
+                  <ClipboardList size={17} style={{ color: BRAND.teal }} />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-white mb-1">
+                    Eligible Assessments
+                  </h2>
+                  <p className="text-sm leading-relaxed" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                    Assessments completed with your email address that are not yet connected to an organization.
+                  </p>
+                </div>
+              </div>
+
+              {loadingAssessments && (
+                <div
+                  className="rounded-xl px-4 py-3 text-sm flex items-center gap-2.5"
+                  style={{
+                    backgroundColor: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    color: 'rgba(255,255,255,0.65)',
+                  }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: `${BRAND.teal} transparent transparent transparent` }} />
+                  Checking for eligible assessments...
+                </div>
+              )}
+
+              {!loadingAssessments && assessmentLoadError && (
+                <div
+                  className="rounded-xl px-4 py-3 text-sm flex items-start gap-2.5"
+                  style={{
+                    backgroundColor: 'rgba(212,168,67,0.08)',
+                    border: '1px solid rgba(212,168,67,0.25)',
+                    color: BRAND.gold,
+                  }}
+                  role="alert"
+                >
+                  <Info size={15} className="flex-shrink-0 mt-0.5" />
+                  {assessmentLoadError}
+                </div>
+              )}
+
+              {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length === 0 && (
+                <div className="rounded-xl p-5 text-center" style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <p className="text-sm mb-4" style={{ color: 'rgba(255,255,255,0.65)' }}>
+                    No eligible assessments were found for your email address.
+                  </p>
+                  <Link
+                    to="/assessment"
+                    className="btn-primary inline-flex items-center gap-2 text-sm"
+                  >
+                    <FileText size={15} />
+                    Complete a New Assessment
+                  </Link>
+                </div>
+              )}
+
+              {!loadingAssessments && !assessmentLoadError && eligibleAssessments.length > 0 && (
+                <div className="space-y-3">
+                  {eligibleAssessments.map(a => (
+                    <div
+                      key={a.id}
+                      className="rounded-xl p-4"
+                      style={{ backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                        <div className="text-sm font-semibold text-white">
+                          {a.organization_name && a.organization_name.trim() !== ''
+                            ? a.organization_name
+                            : 'Unnamed Organization'}
+                        </div>
+                        <div className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                          {a.created_at ? new Date(a.created_at).toLocaleDateString() : '—'}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                        <div>
+                          <span style={{ color: 'rgba(255,255,255,0.4)' }}>Score:</span>{' '}
+                          {a.total_score !== null && a.total_score !== undefined ? a.total_score : 'Not available'}
+                        </div>
+                        <div>
+                          <span style={{ color: 'rgba(255,255,255,0.4)' }}>Status:</span>{' '}
+                          {a.status && a.status.trim() !== '' ? a.status : 'Unknown'}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </AnimatedSection>
+        )}
 
       </div>
     </div>
