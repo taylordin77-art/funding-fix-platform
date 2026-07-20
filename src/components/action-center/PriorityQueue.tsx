@@ -9,6 +9,10 @@ import type {
 
 interface PriorityQueueProps {
   groups: ActionGroup[];
+  /** Forwarded to each ActionCard for the Start button. */
+  canStartForAction?: (action: WorkflowActionWithEvidence) => boolean;
+  startingActionId?: string | null;
+  onStart?: (actionId: string) => void;
 }
 
 const PRIORITY_ACCENT: Record<ActionPriority, string> = {
@@ -18,7 +22,7 @@ const PRIORITY_ACCENT: Record<ActionPriority, string> = {
   Low: 'rgba(255,255,255,0.4)',
 };
 
-export function PriorityQueue({ groups }: PriorityQueueProps) {
+export function PriorityQueue({ groups, canStartForAction, startingActionId, onStart }: PriorityQueueProps) {
   const [collapsed, setCollapsed] = useState<Set<ActionPriority>>(new Set());
 
   const toggle = (p: ActionPriority) => {
@@ -90,7 +94,13 @@ export function PriorityQueue({ groups }: PriorityQueueProps) {
             {!isCollapsed && (
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 {group.actions.map((action) => (
-                  <ActionCard key={action.id} action={action} />
+                  <ActionCard
+                    key={action.id}
+                    action={action}
+                    canStart={canStartForAction?.(action) ?? false}
+                    isStarting={startingActionId === action.id}
+                    onStart={onStart}
+                  />
                 ))}
               </div>
             )}

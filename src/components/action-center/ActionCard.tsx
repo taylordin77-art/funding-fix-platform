@@ -1,11 +1,17 @@
 import {
-  FileCheck2, Upload, ArrowRight, ShieldCheck,
+  FileCheck2, Upload, ArrowRight, ShieldCheck, Loader2,
   Clock, TrendingUp, Calendar, User, BadgeCheck,
 } from 'lucide-react';
 import type { WorkflowActionWithEvidence } from '../../lib/actionWorkflowService';
 
 interface ActionCardProps {
   action: WorkflowActionWithEvidence;
+  /** Whether the current user may start this action (client-side gate). */
+  canStart?: boolean;
+  /** Whether this specific action is currently being started. */
+  isStarting?: boolean;
+  /** Called when the user clicks Start (opens confirmation in the page). */
+  onStart?: (actionId: string) => void;
 }
 
 const PRIORITY_STYLES: Record<string, { bg: string; border: string; color: string }> = {
@@ -43,7 +49,7 @@ function formatDueDate(dueDate: string | null): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export function ActionCard({ action }: ActionCardProps) {
+export function ActionCard({ action, canStart = false, isStarting = false, onStart }: ActionCardProps) {
   const pr = PRIORITY_STYLES[action.priority] ?? PRIORITY_STYLES.Low;
   const st = STATUS_STYLES[action.status] ?? STATUS_STYLES['Not Started'];
   const ev = evidenceStatusLabel(action);
@@ -128,11 +134,23 @@ export function ActionCard({ action }: ActionCardProps) {
         </div>
       </div>
 
-      {/* Visual-only action buttons (no writes) */}
+      {/* Action buttons — Start is functional for eligible Not Started actions */}
       <div className="flex flex-wrap gap-2 pt-3 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-        {(action.status === 'Not Started' || action.status === 'Deferred') && (
-          <button type="button" className="btn-primary" style={{ padding: '0.5rem 1.25rem', fontSize: '0.8125rem' }}>
-            <ArrowRight size={14} /> Start
+        {action.status === 'Not Started' && (
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ padding: '0.5rem 1.25rem', fontSize: '0.8125rem' }}
+            onClick={() => onStart?.(action.id)}
+            disabled={!canStart || isStarting}
+            aria-label={canStart ? 'Start this action' : 'You do not have permission to start this action'}
+            title={canStart ? undefined : 'You do not have permission to start this action'}
+          >
+            {isStarting ? (
+              <><Loader2 size={14} className="animate-spin" /> Starting…</>
+            ) : (
+              <><ArrowRight size={14} /> Start</>
+            )}
           </button>
         )}
         {action.evidenceSummary.evidenceCount > 0 && (
