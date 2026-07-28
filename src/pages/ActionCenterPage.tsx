@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw, CheckCircle2, X } from 'lucide-react';
 import { getOrganizationWorkflow, type OrganizationWorkflow } from '../lib/actionWorkflowService';
 import { persistAssessmentActionPlan, type ActionPersistenceErrorCode } from '../lib/actionPersistenceService';
-import { startAction, type StartActionErrorCode, moveActionToAwaitingEvidence, type AwaitingEvidenceErrorCode, createEvidenceDraft, updateEvidenceDraft, type EvidenceDraftErrorCode } from '../lib/actionMutationService';
+import { startAction, type StartActionErrorCode, moveActionToAwaitingEvidence, type AwaitingEvidenceErrorCode, createEvidenceDraft, updateEvidenceDraft, type EvidenceDraftErrorCode, submitActionEvidence, type SubmitActionEvidenceErrorCode } from '../lib/actionMutationService';
 import {
   getActionAuthContext,
   userCanStartAction,
@@ -23,8 +23,9 @@ import { EmptyActionState, type EmptyStatePhase } from '../components/action-cen
 import { LoadingState } from '../components/action-center/LoadingState';
 import { StartActionModal } from '../components/action-center/StartActionModal';
 import { RequestEvidenceModal } from '../components/action-center/RequestEvidenceModal';
+import { SubmitEvidenceModal } from '../components/action-center/SubmitEvidenceModal';
 import { EvidenceWorkspaceModal } from '../components/action-center/EvidenceWorkspaceModal';
-import { getActionEvidence, type ActionEvidenceResult } from '../lib/actionEvidenceService';
+import { getActionEvidence, EVIDENCE_TYPE_LABELS, type ActionEvidenceResult } from '../lib/actionEvidenceService';
 import type { EvidenceRecord, EvidenceType } from '../lib/actionWorkflowService';
 import type {
   WorkflowActionWithEvidence,
@@ -98,6 +99,35 @@ const EVIDENCE_ERROR_MESSAGES: Record<AwaitingEvidenceErrorCode, string> = {
 type DraftWorkspaceState =
   | { phase: 'idle' }
   | { phase: 'open'; action: WorkflowActionWithEvidence; evidence: EvidenceRecord[]; loadingEvidence: boolean; saving: boolean; feedback: string | null };
+
+/* ---- Evidence Submission state ---- */
+
+type SubmitState =
+  | { phase: 'idle' }
+  | { phase: 'confirming'; action: WorkflowActionWithEvidence; selectedEvidenceIds: string[] }
+  | { phase: 'submitting'; action: WorkflowActionWithEvidence; selectedEvidenceIds: string[] }
+  | { phase: 'success'; actionTitle: string; evidenceCount: number }
+  | { phase: 'error'; message: string; reloadWorkflow: boolean };
+
+const SUBMIT_ERROR_MESSAGES: Record<SubmitActionEvidenceErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to submit evidence for this action.',
+  ACTION_NOT_STARTED: 'This action must be started before evidence can be submitted.',
+  ACTION_NOT_READY_FOR_SUBMISSION: 'This action is not ready for evidence submission.',
+  ACTION_ALREADY_SUBMITTED: 'This action has already been submitted for verification.',
+  EVIDENCE_NOT_REQUIRED: 'This action does not require evidence.',
+  EVIDENCE_REQUIREMENTS_MISSING: 'Evidence requirements have not been defined for this action.',
+  NO_EVIDENCE_SELECTED: 'Select at least one Draft evidence record.',
+  EVIDENCE_NOT_FOUND: 'One or more selected evidence records could not be found.',
+  EVIDENCE_ACTION_MISMATCH: 'One or more selected evidence records do not belong to this action.',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'One or more selected evidence records do not belong to this organization.',
+  EVIDENCE_NOT_SUBMITTABLE: 'One or more selected evidence records can no longer be submitted.',
+  EVIDENCE_CONTENT_INVALID: 'One or more selected evidence records do not contain valid evidence content.',
+  INVALID_ACTION_STATUS: 'This action cannot be submitted from its current status.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid workflow state and could not be submitted.',
+  UNEXPECTED_ERROR: 'We could not submit this evidence. Please try again.',
+};
 
 const DRAFT_ERROR_MESSAGES: Record<EvidenceDraftErrorCode, string> = {
   NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
@@ -211,6 +241,8 @@ export default function ActionCenterPage() {
   const [evidenceState, setEvidenceState] = useState<EvidenceState>({ phase: 'idle' });
   // Evidence draft workspace state
   const [draftState, setDraftState] = useState<DraftWorkspaceState>({ phase: 'idle' });
+  // Evidence submission state
+  const [submitState, setSubmitState] = useState<SubmitState>({ phase: 'idle' });
   const [authContext, setAuthContext] = useState<ActionAuthContext | null>(null);
 
   /* ---- reusable workflow loader ---- */
@@ -448,6 +480,60 @@ export default function ActionCenterPage() {
     });
   }, []);
 
+  /* ---- Evidence Submission handlers ---- */
+  const handleSubmitEvidenceClick = useCallback((actionId: string) => {
+    if (workflow.status !== 'ready') return;
+    const action = workflow.data.actions.find((a) => a.id === actionId);
+    if (!action || action.status !== 'Awaiting Evidence') return;
+    // Open the workspace so the user can select drafts before submitting
+    setDraftState({ phase: 'open', action, evidence: [], loadingEvidence: true, saving: false, feedback: null });
+    refreshEvidence(actionId);
+  }, [workflow, refreshEvidence]);
+
+  const handleRequestSubmit = useCallback(async (actionId: string, selectedEvidenceIds: string[]) => {
+    if (workflow.status !== 'ready') return;
+    const action = workflow.data.actions.find((a) => a.id === actionId);
+    if (!action || action.status !== 'Awaiting Evidence') return;
+    if (submitState.phase === 'submitting') return;
+    setSubmitState({ phase: 'confirming', action, selectedEvidenceIds });
+  }, [workflow, submitState.phase]);
+
+  const handleSubmitConfirm = useCallback(async () => {
+    if (submitState.phase !== 'confirming') return;
+    const { action, selectedEvidenceIds } = submitState;
+    setSubmitState({ phase: 'submitting', action, selectedEvidenceIds });
+
+    const result = await submitActionEvidence({
+      actionId: action.id,
+      evidenceIds: selectedEvidenceIds,
+    });
+
+    if (result.ok) {
+      setSubmitState({ phase: 'success', actionTitle: action.title, evidenceCount: result.evidenceCount });
+      // Close the workspace and refresh everything
+      setDraftState({ phase: 'idle' });
+      await loadWorkflow();
+      return;
+    }
+
+    const code = result.error.code;
+
+    if (code === 'ACTION_ALREADY_SUBMITTED') {
+      setSubmitState({ phase: 'error', message: SUBMIT_ERROR_MESSAGES[code], reloadWorkflow: true });
+      setDraftState({ phase: 'idle' });
+      await loadWorkflow();
+      return;
+    }
+
+    setSubmitState({ phase: 'error', message: SUBMIT_ERROR_MESSAGES[code], reloadWorkflow: false });
+  }, [submitState, loadWorkflow]);
+
+  const closeSubmitModal = useCallback(() => {
+    if (submitState.phase === 'submitting') return;
+    setSubmitState({ phase: 'idle' });
+  }, [submitState.phase]);
+
+  /* ---- Evidence Draft workspace handlers ---- */
   const handleAddEvidenceClick = useCallback(async (actionId: string) => {
     if (workflow.status !== 'ready') return;
     const action = workflow.data.actions.find((a) => a.id === actionId);
@@ -626,6 +712,12 @@ export default function ActionCenterPage() {
   const confirmingEvidenceAction = evidenceState.phase === 'confirming' ? evidenceState.action : null;
   const requestingEvidenceActionId = evidenceState.phase === 'requesting' ? evidenceState.action.id : null;
 
+  const showSubmitSuccess = submitState.phase === 'success';
+  const showSubmitError = submitState.phase === 'error';
+  const confirmingSubmitAction = submitState.phase === 'confirming' ? submitState.action : null;
+  const confirmingSubmitIds = submitState.phase === 'confirming' ? submitState.selectedEvidenceIds : [];
+  const submittingEvidenceActionId = submitState.phase === 'submitting' ? submitState.action.id : null;
+
   return (
     <div className="min-h-screen py-10" style={{ backgroundColor: '#0A0A0A' }}>
       <div className="max-w-6xl mx-auto px-4">
@@ -756,6 +848,56 @@ export default function ActionCenterPage() {
           </div>
         )}
 
+        {/* Evidence Submission success banner */}
+        {showSubmitSuccess && (
+          <div
+            className="card-premium p-4 mb-6 flex items-center justify-between gap-4"
+            style={{ borderColor: 'rgba(52,180,120,0.3)' }}
+          >
+            <div className="flex items-center gap-3">
+              <CheckCircle2 size={18} style={{ color: '#34B478' }} />
+              <div>
+                <p className="text-sm font-semibold text-white">Evidence submitted for verification.</p>
+                <p className="text-xs" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                  {submitState.phase === 'success' && `${submitState.evidenceCount} evidence item(s) were submitted for ${submitState.actionTitle}.`}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="text-xs font-semibold px-3 py-1.5 rounded-full"
+              style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+              onClick={() => setSubmitState({ phase: 'idle' })}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* Evidence Submission error banner */}
+        {showSubmitError && (
+          <div
+            className="card-premium p-4 mb-6 flex items-start justify-between gap-4"
+            style={{ borderColor: 'rgba(224,101,107,0.3)' }}
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle size={18} style={{ color: '#E0656B', marginTop: 2 }} />
+              <p className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                {submitState.phase === 'error' ? submitState.message : ''}
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label="Dismiss error"
+              className="flex-shrink-0"
+              style={{ color: 'rgba(255,255,255,0.5)' }}
+              onClick={() => setSubmitState({ phase: 'idle' })}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
         <ActionCenterHeader
           organization={data.organization}
           summary={data.summary}
@@ -782,6 +924,8 @@ export default function ActionCenterPage() {
               loadingEvidenceActionId={draftState.phase === 'open' && draftState.loadingEvidence ? draftState.action.id : null}
               onAddEvidence={handleAddEvidenceClick}
               onViewEvidence={handleViewEvidenceClick}
+              submittingEvidenceActionId={submittingEvidenceActionId}
+              onSubmitEvidence={handleSubmitEvidenceClick}
             />
           </div>
           <div className="order-1 lg:order-2">
@@ -821,10 +965,30 @@ export default function ActionCenterPage() {
         evidence={draftState.phase === 'open' ? draftState.evidence : []}
         loadingEvidence={draftState.phase === 'open' ? draftState.loadingEvidence : false}
         saving={draftState.phase === 'open' ? draftState.saving : false}
+        submitting={submitState.phase === 'submitting'}
         canManageEvidence={draftState.phase === 'open' ? canManageEvidenceForAction(draftState.action) : false}
         onClose={closeDraftWorkspace}
         onAddDraft={handleAddDraft}
         onUpdateDraft={handleUpdateDraft}
+        onRequestSubmit={handleRequestSubmit}
+      />
+
+      {/* Submit Evidence confirmation modal */}
+      <SubmitEvidenceModal
+        open={confirmingSubmitAction !== null}
+        actionTitle={confirmingSubmitAction?.title ?? ''}
+        actionPillar={confirmingSubmitAction?.pillar_name ?? ''}
+        evidenceCount={confirmingSubmitIds.length}
+        evidenceTypeLabels={confirmingSubmitAction && draftState.phase === 'open'
+          ? draftState.evidence
+              .filter((e) => confirmingSubmitIds.includes(e.id))
+              .map((e) => EVIDENCE_TYPE_LABELS[e.evidence_type] ?? e.evidence_type)
+          : []}
+        certificationRequired={confirmingSubmitAction?.certification_requirement === true}
+        evidenceRequirements={confirmingSubmitAction?.evidence_requirements ?? null}
+        disabled={submitState.phase === 'submitting'}
+        onCancel={closeSubmitModal}
+        onConfirm={handleSubmitConfirm}
       />
     </div>
   );

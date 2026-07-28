@@ -1,5 +1,5 @@
 import {
-  FileCheck2, Upload, ArrowRight, ShieldCheck, Loader2, ClipboardList, Plus,
+  FileCheck2, Upload, ArrowRight, ShieldCheck, Loader2, ClipboardList, Plus, Send,
   Clock, TrendingUp, Calendar, User, BadgeCheck,
 } from 'lucide-react';
 import type { WorkflowActionWithEvidence } from '../../lib/actionWorkflowService';
@@ -26,6 +26,10 @@ interface ActionCardProps {
   onAddEvidence?: (actionId: string) => void;
   /** Called when the user clicks View Evidence (opens the evidence workspace). */
   onViewEvidence?: (actionId: string) => void;
+  /** Whether this action is currently being submitted for verification. */
+  isSubmittingEvidence?: boolean;
+  /** Called when the user clicks Submit Evidence (opens the evidence workspace for selection). */
+  onSubmitEvidence?: (actionId: string) => void;
 }
 
 const PRIORITY_STYLES: Record<string, { bg: string; border: string; color: string }> = {
@@ -67,6 +71,7 @@ export function ActionCard({
   action, canStart = false, isStarting = false, onStart,
   canRequestEvidence = false, isRequestingEvidence = false, onRequestEvidence,
   canManageEvidence = false, isLoadingEvidence = false, onAddEvidence, onViewEvidence,
+  isSubmittingEvidence = false, onSubmitEvidence,
 }: ActionCardProps) {
   const pr = PRIORITY_STYLES[action.priority] ?? PRIORITY_STYLES.Low;
   const st = STATUS_STYLES[action.status] ?? STATUS_STYLES['Not Started'];
@@ -260,6 +265,29 @@ export function ActionCard({
             )}
           </button>
         )}
+        {action.status === 'Awaiting Evidence' && action.evidenceSummary.evidenceCount > 0 && action.evidenceSummary.evidenceSubmitted === 0 && (
+          <button
+            type="button"
+            className="btn-primary"
+            style={{
+              padding: '0.5rem 1.25rem',
+              fontSize: '0.8125rem',
+              background: 'rgba(28,116,134,0.15)',
+              borderColor: 'rgba(28,116,134,0.4)',
+              color: '#2592A8',
+            }}
+            onClick={() => onSubmitEvidence?.(action.id)}
+            disabled={!canManageEvidence || isSubmittingEvidence}
+            aria-label={canManageEvidence ? 'Submit evidence for verification' : 'You do not have permission to submit evidence for this action'}
+            title={canManageEvidence ? undefined : 'You do not have permission to submit evidence for this action'}
+          >
+            {isSubmittingEvidence ? (
+              <><Loader2 size={14} className="animate-spin" /> Submitting…</>
+            ) : (
+              <><Send size={14} /> Submit Evidence</>
+            )}
+          </button>
+        )}
         {action.evidenceSummary.evidenceCount > 0 && (
           <button
             type="button"
@@ -270,8 +298,14 @@ export function ActionCard({
             <FileCheck2 size={14} /> View Evidence
           </button>
         )}
-        {action.evidence_required === true && action.evidenceSummary.evidenceVerified === 0 && (
-          <button type="button" className="btn-ghost" style={{ padding: '0.5rem 1.25rem', fontSize: '0.8125rem' }}>
+        {action.evidence_required === true && action.evidenceSummary.evidenceVerified === 0 && action.status !== 'Submitted for Verification' && (
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ padding: '0.5rem 1.25rem', fontSize: '0.8125rem' }}
+            onClick={() => onViewEvidence?.(action.id)}
+            aria-label="Submit evidence for verification"
+          >
             <Upload size={14} /> Submit Evidence
           </button>
         )}

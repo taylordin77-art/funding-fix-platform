@@ -22,6 +22,8 @@ interface PriorityQueueProps {
   loadingEvidenceActionId?: string | null;
   onAddEvidence?: (actionId: string) => void;
   onViewEvidence?: (actionId: string) => void;
+  submittingEvidenceActionId?: string | null;
+  onSubmitEvidence?: (actionId: string) => void;
 }
 
 const PRIORITY_ACCENT: Record<ActionPriority, string> = {
@@ -35,6 +37,7 @@ export function PriorityQueue({
   groups, canStartForAction, startingActionId, onStart,
   canRequestEvidenceForAction, requestingEvidenceActionId, onRequestEvidence,
   canManageEvidenceForAction, loadingEvidenceActionId, onAddEvidence, onViewEvidence,
+  submittingEvidenceActionId, onSubmitEvidence,
 }: PriorityQueueProps) {
   const [collapsed, setCollapsed] = useState<Set<ActionPriority>>(new Set());
 
@@ -120,6 +123,8 @@ export function PriorityQueue({
                     isLoadingEvidence={loadingEvidenceActionId === action.id}
                     onAddEvidence={onAddEvidence}
                     onViewEvidence={onViewEvidence}
+                    isSubmittingEvidence={submittingEvidenceActionId === action.id}
+                    onSubmitEvidence={onSubmitEvidence}
                   />
                 ))}
               </div>
