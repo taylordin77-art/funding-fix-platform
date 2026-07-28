@@ -13,6 +13,7 @@
  */
 import { supabase } from './supabase';
 import type { PersistedOrganizationAction } from './actionPersistenceService';
+import type { EvidenceRecord, EvidenceType } from './actionWorkflowService';
 
 /* ============================================================
    Types
@@ -202,4 +203,192 @@ export async function moveActionToAwaitingEvidence(actionId: string): Promise<Aw
     action: row,
     message: 'Evidence collection is now required.',
   };
+}
+
+/* ============================================================
+   create_action_evidence_draft / update_action_evidence_draft
+   ============================================================ */
+
+export type EvidenceDraftErrorCode =
+  | 'NOT_AUTHENTICATED'
+  | 'ACTION_NOT_FOUND'
+  | 'EVIDENCE_NOT_FOUND'
+  | 'NOT_AUTHORIZED'
+  | 'ACTION_NOT_STARTED'
+  | 'ACTION_NOT_READY_FOR_EVIDENCE'
+  | 'EVIDENCE_NOT_REQUIRED'
+  | 'EVIDENCE_REQUIREMENTS_MISSING'
+  | 'INVALID_ACTION_STATUS'
+  | 'INVALID_EVIDENCE_TYPE'
+  | 'EVIDENCE_CONTENT_REQUIRED'
+  | 'INVALID_EXTERNAL_URL'
+  | 'UNSAFE_EXTERNAL_URL'
+  | 'EVIDENCE_NOT_EDITABLE'
+  | 'UNEXPECTED_ERROR';
+
+const DRAFT_TOKEN_MAP: Record<string, EvidenceDraftErrorCode> = {
+  NOT_AUTHENTICATED: 'NOT_AUTHENTICATED',
+  ACTION_NOT_FOUND: 'ACTION_NOT_FOUND',
+  EVIDENCE_NOT_FOUND: 'EVIDENCE_NOT_FOUND',
+  NOT_AUTHORIZED: 'NOT_AUTHORIZED',
+  ACTION_NOT_STARTED: 'ACTION_NOT_STARTED',
+  ACTION_NOT_READY_FOR_EVIDENCE: 'ACTION_NOT_READY_FOR_EVIDENCE',
+  EVIDENCE_NOT_REQUIRED: 'EVIDENCE_NOT_REQUIRED',
+  EVIDENCE_REQUIREMENTS_MISSING: 'EVIDENCE_REQUIREMENTS_MISSING',
+  INVALID_ACTION_STATUS: 'INVALID_ACTION_STATUS',
+  INVALID_EVIDENCE_TYPE: 'INVALID_EVIDENCE_TYPE',
+  EVIDENCE_CONTENT_REQUIRED: 'EVIDENCE_CONTENT_REQUIRED',
+  INVALID_EXTERNAL_URL: 'INVALID_EXTERNAL_URL',
+  UNSAFE_EXTERNAL_URL: 'UNSAFE_EXTERNAL_URL',
+  EVIDENCE_NOT_EDITABLE: 'EVIDENCE_NOT_EDITABLE',
+};
+
+const DRAFT_SAFE_MESSAGES: Record<EvidenceDraftErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  EVIDENCE_NOT_FOUND: 'This evidence record could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to manage evidence for this action.',
+  ACTION_NOT_STARTED: 'This action must be started before evidence can be added.',
+  ACTION_NOT_READY_FOR_EVIDENCE: 'This action is not ready to receive evidence.',
+  EVIDENCE_NOT_REQUIRED: 'This action does not require evidence.',
+  EVIDENCE_REQUIREMENTS_MISSING: 'Evidence requirements have not been defined for this action.',
+  INVALID_ACTION_STATUS: 'This action cannot receive evidence in its current status.',
+  INVALID_EVIDENCE_TYPE: 'Select a valid evidence type.',
+  EVIDENCE_CONTENT_REQUIRED: 'Provide evidence content before saving this draft.',
+  INVALID_EXTERNAL_URL: 'Enter a valid web address.',
+  UNSAFE_EXTERNAL_URL: 'This type of link is not permitted.',
+  EVIDENCE_NOT_EDITABLE: 'This evidence record can no longer be edited.',
+  UNEXPECTED_ERROR: 'We could not save this evidence draft. Please try again.',
+};
+
+function mapDraftRpcError(message: string | undefined): EvidenceDraftErrorCode {
+  if (!message) return 'UNEXPECTED_ERROR';
+  const token = message.split(':')[0].trim();
+  return DRAFT_TOKEN_MAP[token] ?? 'UNEXPECTED_ERROR';
+}
+
+const VALID_EVIDENCE_TYPES: ReadonlySet<string> = new Set<EvidenceType>([
+  'document', 'image', 'website_link', 'written_response', 'completed_form',
+  'meeting_record', 'policy', 'budget', 'board_roster', 'board_matrix',
+  'strategic_plan', 'logic_model', 'outcome_report', 'financial_report',
+  'filing_confirmation', 'workshop_completion', 'other',
+]);
+
+function isEvidenceRow(row: unknown): row is EvidenceRecord {
+  if (!row || typeof row !== 'object') return false;
+  const r = row as Record<string, unknown>;
+  return (
+    typeof r.id === 'string' &&
+    typeof r.action_id === 'string' &&
+    typeof r.organization_id === 'string' &&
+    typeof r.submitted_by === 'string' &&
+    typeof r.evidence_type === 'string' &&
+    typeof r.verification_status === 'string'
+  );
+}
+
+function normalizeOptional(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const trimmed = v.trim();
+  return trimmed === '' ? null : v;
+}
+
+export interface CreateEvidenceDraftInput {
+  actionId: string;
+  evidenceType: EvidenceType;
+  externalUrl?: string | null;
+  writtenResponse?: string | null;
+  submissionNotes?: string | null;
+  fileUrl?: string | null;
+}
+
+export type CreateEvidenceDraftResult =
+  | { ok: true; evidence: EvidenceRecord; message: string }
+  | { ok: false; error: { code: EvidenceDraftErrorCode; message: string } };
+
+export async function createEvidenceDraft(input: CreateEvidenceDraftInput): Promise<CreateEvidenceDraftResult> {
+  if (!input.actionId || input.actionId.trim() === '') {
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: DRAFT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+  if (!VALID_EVIDENCE_TYPES.has(input.evidenceType)) {
+    return { ok: false, error: { code: 'INVALID_EVIDENCE_TYPE', message: DRAFT_SAFE_MESSAGES.INVALID_EVIDENCE_TYPE } };
+  }
+
+  const { data, error } = (await supabase.rpc('create_action_evidence_draft', {
+    p_action_id: input.actionId,
+    p_evidence_type: input.evidenceType,
+    p_external_url: normalizeOptional(input.externalUrl),
+    p_written_response: normalizeOptional(input.writtenResponse),
+    p_submission_notes: normalizeOptional(input.submissionNotes),
+    p_file_url: normalizeOptional(input.fileUrl),
+  })) as { data: unknown; error: { message?: string } | null };
+
+  if (error) {
+    console.error('[actionMutationService] create_action_evidence_draft RPC error:', error.message);
+    const code = mapDraftRpcError(error.message);
+    return { ok: false, error: { code, message: DRAFT_SAFE_MESSAGES[code] } };
+  }
+
+  if (!isEvidenceRow(data)) {
+    console.error('[actionMutationService] evidence RPC returned unexpected row shape');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: DRAFT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const row = data as EvidenceRecord;
+  if (row.verification_status !== 'Draft') {
+    console.error('[actionMutationService] evidence RPC returned status', row.verification_status, 'expected Draft');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: DRAFT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  return { ok: true, evidence: row, message: 'Evidence draft saved.' };
+}
+
+export interface UpdateEvidenceDraftInput {
+  evidenceId: string;
+  evidenceType: EvidenceType;
+  externalUrl?: string | null;
+  writtenResponse?: string | null;
+  submissionNotes?: string | null;
+  fileUrl?: string | null;
+}
+
+export type UpdateEvidenceDraftResult =
+  | { ok: true; evidence: EvidenceRecord; message: string }
+  | { ok: false; error: { code: EvidenceDraftErrorCode; message: string } };
+
+export async function updateEvidenceDraft(input: UpdateEvidenceDraftInput): Promise<UpdateEvidenceDraftResult> {
+  if (!input.evidenceId || input.evidenceId.trim() === '') {
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: DRAFT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+  if (!VALID_EVIDENCE_TYPES.has(input.evidenceType)) {
+    return { ok: false, error: { code: 'INVALID_EVIDENCE_TYPE', message: DRAFT_SAFE_MESSAGES.INVALID_EVIDENCE_TYPE } };
+  }
+
+  const { data, error } = (await supabase.rpc('update_action_evidence_draft', {
+    p_evidence_id: input.evidenceId,
+    p_evidence_type: input.evidenceType,
+    p_external_url: normalizeOptional(input.externalUrl),
+    p_written_response: normalizeOptional(input.writtenResponse),
+    p_submission_notes: normalizeOptional(input.submissionNotes),
+    p_file_url: normalizeOptional(input.fileUrl),
+  })) as { data: unknown; error: { message?: string } | null };
+
+  if (error) {
+    console.error('[actionMutationService] update_action_evidence_draft RPC error:', error.message);
+    const code = mapDraftRpcError(error.message);
+    return { ok: false, error: { code, message: DRAFT_SAFE_MESSAGES[code] } };
+  }
+
+  if (!isEvidenceRow(data)) {
+    console.error('[actionMutationService] update evidence RPC returned unexpected row shape');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: DRAFT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const row = data as EvidenceRecord;
+  if (row.verification_status !== 'Draft') {
+    console.error('[actionMutationService] update evidence RPC returned status', row.verification_status, 'expected Draft');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: DRAFT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  return { ok: true, evidence: row, message: 'Evidence draft updated.' };
 }

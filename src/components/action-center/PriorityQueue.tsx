@@ -17,6 +17,11 @@ interface PriorityQueueProps {
   canRequestEvidenceForAction?: (action: WorkflowActionWithEvidence) => boolean;
   requestingEvidenceActionId?: string | null;
   onRequestEvidence?: (actionId: string) => void;
+  /** Forwarded to each ActionCard for the Add/View Evidence buttons. */
+  canManageEvidenceForAction?: (action: WorkflowActionWithEvidence) => boolean;
+  loadingEvidenceActionId?: string | null;
+  onAddEvidence?: (actionId: string) => void;
+  onViewEvidence?: (actionId: string) => void;
 }
 
 const PRIORITY_ACCENT: Record<ActionPriority, string> = {
@@ -29,6 +34,7 @@ const PRIORITY_ACCENT: Record<ActionPriority, string> = {
 export function PriorityQueue({
   groups, canStartForAction, startingActionId, onStart,
   canRequestEvidenceForAction, requestingEvidenceActionId, onRequestEvidence,
+  canManageEvidenceForAction, loadingEvidenceActionId, onAddEvidence, onViewEvidence,
 }: PriorityQueueProps) {
   const [collapsed, setCollapsed] = useState<Set<ActionPriority>>(new Set());
 
@@ -110,6 +116,10 @@ export function PriorityQueue({
                     canRequestEvidence={canRequestEvidenceForAction?.(action) ?? false}
                     isRequestingEvidence={requestingEvidenceActionId === action.id}
                     onRequestEvidence={onRequestEvidence}
+                    canManageEvidence={canManageEvidenceForAction?.(action) ?? false}
+                    isLoadingEvidence={loadingEvidenceActionId === action.id}
+                    onAddEvidence={onAddEvidence}
+                    onViewEvidence={onViewEvidence}
                   />
                 ))}
               </div>

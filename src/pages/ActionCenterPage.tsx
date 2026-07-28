@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw, CheckCircle2, X } from 'lucide-react';
 import { getOrganizationWorkflow, type OrganizationWorkflow } from '../lib/actionWorkflowService';
 import { persistAssessmentActionPlan, type ActionPersistenceErrorCode } from '../lib/actionPersistenceService';
-import { startAction, type StartActionErrorCode, moveActionToAwaitingEvidence, type AwaitingEvidenceErrorCode } from '../lib/actionMutationService';
+import { startAction, type StartActionErrorCode, moveActionToAwaitingEvidence, type AwaitingEvidenceErrorCode, createEvidenceDraft, updateEvidenceDraft, type EvidenceDraftErrorCode } from '../lib/actionMutationService';
 import {
   getActionAuthContext,
   userCanStartAction,
@@ -23,6 +23,9 @@ import { EmptyActionState, type EmptyStatePhase } from '../components/action-cen
 import { LoadingState } from '../components/action-center/LoadingState';
 import { StartActionModal } from '../components/action-center/StartActionModal';
 import { RequestEvidenceModal } from '../components/action-center/RequestEvidenceModal';
+import { EvidenceWorkspaceModal } from '../components/action-center/EvidenceWorkspaceModal';
+import { getActionEvidence, type ActionEvidenceResult } from '../lib/actionEvidenceService';
+import type { EvidenceRecord, EvidenceType } from '../lib/actionWorkflowService';
 import type {
   WorkflowActionWithEvidence,
   ActionPriority,
@@ -88,6 +91,30 @@ const EVIDENCE_ERROR_MESSAGES: Record<AwaitingEvidenceErrorCode, string> = {
   INVALID_ACTION_STATUS: 'This action cannot move to evidence collection from its current status.',
   ACTION_STATE_INCONSISTENT: 'This action has an invalid workflow state and could not be updated.',
   UNEXPECTED_ERROR: 'We could not move this action to evidence collection. Please try again.',
+};
+
+/* ---- Evidence Draft state ---- */
+
+type DraftWorkspaceState =
+  | { phase: 'idle' }
+  | { phase: 'open'; action: WorkflowActionWithEvidence; evidence: EvidenceRecord[]; loadingEvidence: boolean; saving: boolean; feedback: string | null };
+
+const DRAFT_ERROR_MESSAGES: Record<EvidenceDraftErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  EVIDENCE_NOT_FOUND: 'This evidence record could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to manage evidence for this action.',
+  ACTION_NOT_STARTED: 'This action must be started before evidence can be added.',
+  ACTION_NOT_READY_FOR_EVIDENCE: 'This action is not ready to receive evidence.',
+  EVIDENCE_NOT_REQUIRED: 'This action does not require evidence.',
+  EVIDENCE_REQUIREMENTS_MISSING: 'Evidence requirements have not been defined for this action.',
+  INVALID_ACTION_STATUS: 'This action cannot receive evidence in its current status.',
+  INVALID_EVIDENCE_TYPE: 'Select a valid evidence type.',
+  EVIDENCE_CONTENT_REQUIRED: 'Provide evidence content before saving this draft.',
+  INVALID_EXTERNAL_URL: 'Enter a valid web address.',
+  UNSAFE_EXTERNAL_URL: 'This type of link is not permitted.',
+  EVIDENCE_NOT_EDITABLE: 'This evidence record can no longer be edited.',
+  UNEXPECTED_ERROR: 'We could not save this evidence draft. Please try again.',
 };
 
 /* ============================================================
@@ -182,6 +209,8 @@ export default function ActionCenterPage() {
   const [startState, setStartState] = useState<StartState>({ phase: 'idle' });
   // Request-evidence state
   const [evidenceState, setEvidenceState] = useState<EvidenceState>({ phase: 'idle' });
+  // Evidence draft workspace state
+  const [draftState, setDraftState] = useState<DraftWorkspaceState>({ phase: 'idle' });
   const [authContext, setAuthContext] = useState<ActionAuthContext | null>(null);
 
   /* ---- reusable workflow loader ---- */
@@ -395,6 +424,109 @@ export default function ActionCenterPage() {
     if (action.evidence_required !== true) return false;
     return userCanStartAction(action, authContext);
   }, [authContext]);
+
+  const canManageEvidenceForAction = useCallback((action: WorkflowActionWithEvidence): boolean => {
+    if (!authContext) return false;
+    if (action.status !== 'Awaiting Evidence') return false;
+    return userCanStartAction(action, authContext);
+  }, [authContext]);
+
+  /* ---- Evidence Draft workspace handlers ---- */
+  const refreshEvidence = useCallback(async (actionId: string) => {
+    setDraftState((prev) => {
+      if (prev.phase !== 'open') return prev;
+      return { ...prev, loadingEvidence: true };
+    });
+    const result: ActionEvidenceResult = await getActionEvidence(actionId);
+    setDraftState((prev) => {
+      if (prev.phase !== 'open') return prev;
+      return {
+        ...prev,
+        evidence: result.ok ? result.evidence : [],
+        loadingEvidence: false,
+      };
+    });
+  }, []);
+
+  const handleAddEvidenceClick = useCallback(async (actionId: string) => {
+    if (workflow.status !== 'ready') return;
+    const action = workflow.data.actions.find((a) => a.id === actionId);
+    if (!action || action.status !== 'Awaiting Evidence') return;
+    setDraftState({ phase: 'open', action, evidence: [], loadingEvidence: true, saving: false, feedback: null });
+    await refreshEvidence(actionId);
+  }, [workflow, refreshEvidence]);
+
+  const handleViewEvidenceClick = useCallback(async (actionId: string) => {
+    if (workflow.status !== 'ready') return;
+    const action = workflow.data.actions.find((a) => a.id === actionId);
+    if (!action) return;
+    setDraftState({ phase: 'open', action, evidence: [], loadingEvidence: true, saving: false, feedback: null });
+    await refreshEvidence(actionId);
+  }, [workflow, refreshEvidence]);
+
+  const closeDraftWorkspace = useCallback(() => {
+    setDraftState({ phase: 'idle' });
+  }, []);
+
+  const handleAddDraft = useCallback(async (values: {
+    evidenceType: EvidenceType;
+    externalUrl: string | null;
+    writtenResponse: string | null;
+    submissionNotes: string | null;
+  }) => {
+    if (draftState.phase !== 'open') return;
+    const actionId = draftState.action.id;
+    setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: true, feedback: null } : prev);
+
+    const result = await createEvidenceDraft({
+      actionId,
+      evidenceType: values.evidenceType,
+      externalUrl: values.externalUrl,
+      writtenResponse: values.writtenResponse,
+      submissionNotes: values.submissionNotes,
+    });
+
+    if (result.ok) {
+      setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: false, feedback: 'Evidence draft saved.' } : prev);
+      await refreshEvidence(actionId);
+      await loadWorkflow();
+      return;
+    }
+
+    setDraftState((prev) => prev.phase === 'open'
+      ? { ...prev, saving: false, feedback: DRAFT_ERROR_MESSAGES[result.error.code] }
+      : prev);
+  }, [draftState, refreshEvidence, loadWorkflow]);
+
+  const handleUpdateDraft = useCallback(async (evidenceId: string, values: {
+    evidenceType: EvidenceType;
+    externalUrl: string | null;
+    writtenResponse: string | null;
+    submissionNotes: string | null;
+  }) => {
+    if (draftState.phase !== 'open') return;
+    const actionId = draftState.action.id;
+    setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: true, feedback: null } : prev);
+
+    const result = await updateEvidenceDraft({
+      evidenceId,
+      evidenceType: values.evidenceType,
+      externalUrl: values.externalUrl,
+      writtenResponse: values.writtenResponse,
+      submissionNotes: values.submissionNotes,
+    });
+
+    if (result.ok) {
+      setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: false, feedback: 'Evidence draft updated.' } : prev);
+      await refreshEvidence(actionId);
+      await loadWorkflow();
+      return;
+    }
+
+    setDraftState((prev) => prev.phase === 'open'
+      ? { ...prev, saving: false, feedback: DRAFT_ERROR_MESSAGES[result.error.code] }
+      : prev);
+  }, [draftState, refreshEvidence, loadWorkflow]);
 
   /* ---- early returns for non-ready workflow ---- */
   if (workflow.status === 'loading') return <LoadingState />;
@@ -646,6 +778,10 @@ export default function ActionCenterPage() {
               canRequestEvidenceForAction={canRequestEvidenceForAction}
               requestingEvidenceActionId={requestingEvidenceActionId}
               onRequestEvidence={handleRequestEvidenceClick}
+              canManageEvidenceForAction={canManageEvidenceForAction}
+              loadingEvidenceActionId={draftState.phase === 'open' && draftState.loadingEvidence ? draftState.action.id : null}
+              onAddEvidence={handleAddEvidenceClick}
+              onViewEvidence={handleViewEvidenceClick}
             />
           </div>
           <div className="order-1 lg:order-2">
@@ -676,6 +812,19 @@ export default function ActionCenterPage() {
         disabled={evidenceState.phase === 'requesting'}
         onCancel={closeEvidenceModal}
         onConfirm={handleRequestEvidenceConfirm}
+      />
+
+      {/* Evidence Draft workspace modal */}
+      <EvidenceWorkspaceModal
+        open={draftState.phase === 'open'}
+        action={draftState.phase === 'open' ? draftState.action : null}
+        evidence={draftState.phase === 'open' ? draftState.evidence : []}
+        loadingEvidence={draftState.phase === 'open' ? draftState.loadingEvidence : false}
+        saving={draftState.phase === 'open' ? draftState.saving : false}
+        canManageEvidence={draftState.phase === 'open' ? canManageEvidenceForAction(draftState.action) : false}
+        onClose={closeDraftWorkspace}
+        onAddDraft={handleAddDraft}
+        onUpdateDraft={handleUpdateDraft}
       />
     </div>
   );

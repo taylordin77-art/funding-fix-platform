@@ -1,5 +1,5 @@
 import {
-  FileCheck2, Upload, ArrowRight, ShieldCheck, Loader2, ClipboardList,
+  FileCheck2, Upload, ArrowRight, ShieldCheck, Loader2, ClipboardList, Plus,
   Clock, TrendingUp, Calendar, User, BadgeCheck,
 } from 'lucide-react';
 import type { WorkflowActionWithEvidence } from '../../lib/actionWorkflowService';
@@ -18,6 +18,14 @@ interface ActionCardProps {
   isRequestingEvidence?: boolean;
   /** Called when the user clicks Request Evidence (opens confirmation in the page). */
   onRequestEvidence?: (actionId: string) => void;
+  /** Whether the current user may manage evidence for this action. */
+  canManageEvidence?: boolean;
+  /** Whether evidence is currently being loaded for this action. */
+  isLoadingEvidence?: boolean;
+  /** Called when the user clicks Add Evidence (opens the evidence workspace). */
+  onAddEvidence?: (actionId: string) => void;
+  /** Called when the user clicks View Evidence (opens the evidence workspace). */
+  onViewEvidence?: (actionId: string) => void;
 }
 
 const PRIORITY_STYLES: Record<string, { bg: string; border: string; color: string }> = {
@@ -58,6 +66,7 @@ function formatDueDate(dueDate: string | null): string {
 export function ActionCard({
   action, canStart = false, isStarting = false, onStart,
   canRequestEvidence = false, isRequestingEvidence = false, onRequestEvidence,
+  canManageEvidence = false, isLoadingEvidence = false, onAddEvidence, onViewEvidence,
 }: ActionCardProps) {
   const pr = PRIORITY_STYLES[action.priority] ?? PRIORITY_STYLES.Low;
   const st = STATUS_STYLES[action.status] ?? STATUS_STYLES['Not Started'];
@@ -228,8 +237,36 @@ export function ActionCard({
             )}
           </button>
         )}
+        {action.status === 'Awaiting Evidence' && (
+          <button
+            type="button"
+            className="btn-primary"
+            style={{
+              padding: '0.5rem 1.25rem',
+              fontSize: '0.8125rem',
+              background: 'rgba(212,168,67,0.15)',
+              borderColor: 'rgba(212,168,67,0.4)',
+              color: '#D4A843',
+            }}
+            onClick={() => onAddEvidence?.(action.id)}
+            disabled={!canManageEvidence || isLoadingEvidence}
+            aria-label={canManageEvidence ? 'Add evidence for this action' : 'You do not have permission to manage evidence for this action'}
+            title={canManageEvidence ? undefined : 'You do not have permission to manage evidence for this action'}
+          >
+            {isLoadingEvidence ? (
+              <><Loader2 size={14} className="animate-spin" /> Loading…</>
+            ) : (
+              <><Plus size={14} /> Add Evidence</>
+            )}
+          </button>
+        )}
         {action.evidenceSummary.evidenceCount > 0 && (
-          <button type="button" className="btn-ghost" style={{ padding: '0.5rem 1.25rem', fontSize: '0.8125rem' }}>
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ padding: '0.5rem 1.25rem', fontSize: '0.8125rem' }}
+            onClick={() => onViewEvidence?.(action.id)}
+          >
             <FileCheck2 size={14} /> View Evidence
           </button>
         )}
