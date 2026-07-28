@@ -1,5 +1,5 @@
 import {
-  FileCheck2, Upload, ArrowRight, ShieldCheck, Loader2,
+  FileCheck2, Upload, ArrowRight, ShieldCheck, Loader2, ClipboardList,
   Clock, TrendingUp, Calendar, User, BadgeCheck,
 } from 'lucide-react';
 import type { WorkflowActionWithEvidence } from '../../lib/actionWorkflowService';
@@ -12,6 +12,12 @@ interface ActionCardProps {
   isStarting?: boolean;
   /** Called when the user clicks Start (opens confirmation in the page). */
   onStart?: (actionId: string) => void;
+  /** Whether the current user may request evidence for this action. */
+  canRequestEvidence?: boolean;
+  /** Whether this specific action is currently being moved to evidence collection. */
+  isRequestingEvidence?: boolean;
+  /** Called when the user clicks Request Evidence (opens confirmation in the page). */
+  onRequestEvidence?: (actionId: string) => void;
 }
 
 const PRIORITY_STYLES: Record<string, { bg: string; border: string; color: string }> = {
@@ -49,7 +55,10 @@ function formatDueDate(dueDate: string | null): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export function ActionCard({ action, canStart = false, isStarting = false, onStart }: ActionCardProps) {
+export function ActionCard({
+  action, canStart = false, isStarting = false, onStart,
+  canRequestEvidence = false, isRequestingEvidence = false, onRequestEvidence,
+}: ActionCardProps) {
   const pr = PRIORITY_STYLES[action.priority] ?? PRIORITY_STYLES.Low;
   const st = STATUS_STYLES[action.status] ?? STATUS_STYLES['Not Started'];
   const ev = evidenceStatusLabel(action);
@@ -134,7 +143,38 @@ export function ActionCard({ action, canStart = false, isStarting = false, onSta
         </div>
       </div>
 
-      {/* Action buttons — Start is functional for eligible Not Started actions */}
+      {/* Evidence requirements display for In Progress evidence-required actions */}
+      {action.status === 'In Progress' && action.evidence_required === true && (
+        <div className="mb-4">
+          {action.evidence_requirements?.trim() ? (
+            <div
+              className="rounded-xl px-3.5 py-3"
+              style={{ background: 'rgba(212,168,67,0.06)', border: '1px solid rgba(212,168,67,0.18)' }}
+            >
+              <p className="text-xs font-bold uppercase tracking-wider mb-1.5 flex items-center gap-1.5" style={{ color: '#D4A843' }}>
+                <ClipboardList size={12} /> Evidence Required
+              </p>
+              <p className="text-xs leading-relaxed whitespace-pre-line" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                {action.evidence_requirements}
+              </p>
+            </div>
+          ) : (
+            <div
+              className="rounded-xl px-3.5 py-3"
+              style={{ background: 'rgba(224,101,107,0.06)', border: '1px solid rgba(224,101,107,0.18)' }}
+            >
+              <p className="text-xs font-bold uppercase tracking-wider mb-1 flex items-center gap-1.5" style={{ color: '#E0656B' }}>
+                <ClipboardList size={12} /> Evidence Required
+              </p>
+              <p className="text-xs" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                Evidence requirements have not been defined.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Action buttons */}
       <div className="flex flex-wrap gap-2 pt-3 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
         {action.status === 'Not Started' && (
           <button
@@ -150,6 +190,41 @@ export function ActionCard({ action, canStart = false, isStarting = false, onSta
               <><Loader2 size={14} className="animate-spin" /> Starting…</>
             ) : (
               <><ArrowRight size={14} /> Start</>
+            )}
+          </button>
+        )}
+        {action.status === 'In Progress' && action.evidence_required === true && (
+          <button
+            type="button"
+            className="btn-primary"
+            style={{
+              padding: '0.5rem 1.25rem',
+              fontSize: '0.8125rem',
+              background: 'rgba(212,168,67,0.15)',
+              borderColor: 'rgba(212,168,67,0.4)',
+              color: '#D4A843',
+            }}
+            onClick={() => onRequestEvidence?.(action.id)}
+            disabled={!canRequestEvidence || isRequestingEvidence || !action.evidence_requirements?.trim()}
+            aria-label={
+              !action.evidence_requirements?.trim()
+                ? 'Evidence requirements have not been defined'
+                : canRequestEvidence
+                  ? 'Move this action to evidence collection'
+                  : 'You do not have permission to move this action to evidence collection'
+            }
+            title={
+              !action.evidence_requirements?.trim()
+                ? 'Evidence requirements have not been defined'
+                : canRequestEvidence
+                  ? undefined
+                  : 'You do not have permission to move this action to evidence collection'
+            }
+          >
+            {isRequestingEvidence ? (
+              <><Loader2 size={14} className="animate-spin" /> Moving…</>
+            ) : (
+              <><FileCheck2 size={14} /> Request Evidence</>
             )}
           </button>
         )}

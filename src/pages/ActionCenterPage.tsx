@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw, CheckCircle2, X } from 'lucide-react';
 import { getOrganizationWorkflow, type OrganizationWorkflow } from '../lib/actionWorkflowService';
 import { persistAssessmentActionPlan, type ActionPersistenceErrorCode } from '../lib/actionPersistenceService';
-import { startAction, type StartActionErrorCode } from '../lib/actionMutationService';
+import { startAction, type StartActionErrorCode, moveActionToAwaitingEvidence, type AwaitingEvidenceErrorCode } from '../lib/actionMutationService';
 import {
   getActionAuthContext,
   userCanStartAction,
@@ -22,6 +22,7 @@ import { ProgressSidebar } from '../components/action-center/ProgressSidebar';
 import { EmptyActionState, type EmptyStatePhase } from '../components/action-center/EmptyActionState';
 import { LoadingState } from '../components/action-center/LoadingState';
 import { StartActionModal } from '../components/action-center/StartActionModal';
+import { RequestEvidenceModal } from '../components/action-center/RequestEvidenceModal';
 import type {
   WorkflowActionWithEvidence,
   ActionPriority,
@@ -65,6 +66,28 @@ const START_ERROR_MESSAGES: Record<StartActionErrorCode, string> = {
   INVALID_ACTION_STATUS: 'This action cannot be started from its current status.',
   ACTION_STATE_INCONSISTENT: 'This action has an invalid workflow state and could not be started.',
   UNEXPECTED_ERROR: 'We could not start this action. Please try again.',
+};
+
+/* ---- Request Evidence state ---- */
+
+type EvidenceState =
+  | { phase: 'idle' }
+  | { phase: 'confirming'; action: WorkflowActionWithEvidence }
+  | { phase: 'requesting'; action: WorkflowActionWithEvidence }
+  | { phase: 'success'; actionTitle: string }
+  | { phase: 'error'; message: string; reloadWorkflow: boolean };
+
+const EVIDENCE_ERROR_MESSAGES: Record<AwaitingEvidenceErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to move this action to evidence collection.',
+  ACTION_NOT_STARTED: 'This action must be started before evidence can be requested.',
+  ACTION_ALREADY_AWAITING_EVIDENCE: 'This action is already awaiting evidence.',
+  EVIDENCE_NOT_REQUIRED: 'This action does not require evidence and cannot enter the evidence collection stage.',
+  EVIDENCE_REQUIREMENTS_MISSING: 'Evidence requirements must be defined before this action can move to Awaiting Evidence.',
+  INVALID_ACTION_STATUS: 'This action cannot move to evidence collection from its current status.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid workflow state and could not be updated.',
+  UNEXPECTED_ERROR: 'We could not move this action to evidence collection. Please try again.',
 };
 
 /* ============================================================
@@ -157,6 +180,8 @@ export default function ActionCenterPage() {
 
   // Start-action state
   const [startState, setStartState] = useState<StartState>({ phase: 'idle' });
+  // Request-evidence state
+  const [evidenceState, setEvidenceState] = useState<EvidenceState>({ phase: 'idle' });
   const [authContext, setAuthContext] = useState<ActionAuthContext | null>(null);
 
   /* ---- reusable workflow loader ---- */
@@ -318,6 +343,59 @@ export default function ActionCenterPage() {
     return userCanStartAction(action, authContext);
   }, [authContext]);
 
+  /* ---- Request Evidence handler ---- */
+  const handleRequestEvidenceClick = useCallback((actionId: string) => {
+    if (workflow.status !== 'ready') return;
+    const action = workflow.data.actions.find((a) => a.id === actionId);
+    if (!action || action.status !== 'In Progress' || action.evidence_required !== true) return;
+    if (evidenceState.phase === 'requesting' || evidenceState.phase === 'confirming') return;
+    setEvidenceState({ phase: 'confirming', action });
+  }, [workflow, evidenceState.phase]);
+
+  const handleRequestEvidenceConfirm = useCallback(async () => {
+    if (evidenceState.phase !== 'confirming') return;
+    const action = evidenceState.action;
+    setEvidenceState({ phase: 'requesting', action });
+
+    const result = await moveActionToAwaitingEvidence(action.id);
+
+    if (result.ok) {
+      setEvidenceState({ phase: 'success', actionTitle: action.title });
+      await loadWorkflow();
+      return;
+    }
+
+    const code = result.error.code;
+
+    if (code === 'ACTION_ALREADY_AWAITING_EVIDENCE') {
+      setEvidenceState({
+        phase: 'error',
+        message: EVIDENCE_ERROR_MESSAGES[code],
+        reloadWorkflow: true,
+      });
+      await loadWorkflow();
+      return;
+    }
+
+    setEvidenceState({
+      phase: 'error',
+      message: EVIDENCE_ERROR_MESSAGES[code],
+      reloadWorkflow: false,
+    });
+  }, [evidenceState, loadWorkflow]);
+
+  const closeEvidenceModal = useCallback(() => {
+    if (evidenceState.phase === 'requesting') return;
+    setEvidenceState({ phase: 'idle' });
+  }, [evidenceState.phase]);
+
+  const canRequestEvidenceForAction = useCallback((action: WorkflowActionWithEvidence): boolean => {
+    if (!authContext) return false;
+    if (action.status !== 'In Progress') return false;
+    if (action.evidence_required !== true) return false;
+    return userCanStartAction(action, authContext);
+  }, [authContext]);
+
   /* ---- early returns for non-ready workflow ---- */
   if (workflow.status === 'loading') return <LoadingState />;
 
@@ -411,6 +489,11 @@ export default function ActionCenterPage() {
   const confirmingAction = startState.phase === 'confirming' ? startState.action : null;
   const startingActionId = startState.phase === 'starting' ? startState.action.id : null;
 
+  const showEvidenceSuccess = evidenceState.phase === 'success';
+  const showEvidenceError = evidenceState.phase === 'error';
+  const confirmingEvidenceAction = evidenceState.phase === 'confirming' ? evidenceState.action : null;
+  const requestingEvidenceActionId = evidenceState.phase === 'requesting' ? evidenceState.action.id : null;
+
   return (
     <div className="min-h-screen py-10" style={{ backgroundColor: '#0A0A0A' }}>
       <div className="max-w-6xl mx-auto px-4">
@@ -491,6 +574,56 @@ export default function ActionCenterPage() {
           </div>
         )}
 
+        {/* Request Evidence success banner */}
+        {showEvidenceSuccess && (
+          <div
+            className="card-premium p-4 mb-6 flex items-center justify-between gap-4"
+            style={{ borderColor: 'rgba(52,180,120,0.3)' }}
+          >
+            <div className="flex items-center gap-3">
+              <CheckCircle2 size={18} style={{ color: '#34B478' }} />
+              <div>
+                <p className="text-sm font-semibold text-white">Evidence collection is now required.</p>
+                <p className="text-xs" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                  {evidenceState.phase === 'success' && `${evidenceState.actionTitle} moved to Awaiting Evidence.`}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="text-xs font-semibold px-3 py-1.5 rounded-full"
+              style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+              onClick={() => setEvidenceState({ phase: 'idle' })}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* Request Evidence error banner */}
+        {showEvidenceError && (
+          <div
+            className="card-premium p-4 mb-6 flex items-start justify-between gap-4"
+            style={{ borderColor: 'rgba(224,101,107,0.3)' }}
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle size={18} style={{ color: '#E0656B', marginTop: 2 }} />
+              <p className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                {evidenceState.phase === 'error' ? evidenceState.message : ''}
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label="Dismiss error"
+              className="flex-shrink-0"
+              style={{ color: 'rgba(255,255,255,0.5)' }}
+              onClick={() => setEvidenceState({ phase: 'idle' })}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
         <ActionCenterHeader
           organization={data.organization}
           summary={data.summary}
@@ -510,6 +643,9 @@ export default function ActionCenterPage() {
               canStartForAction={canStartForAction}
               startingActionId={startingActionId}
               onStart={handleStartClick}
+              canRequestEvidenceForAction={canRequestEvidenceForAction}
+              requestingEvidenceActionId={requestingEvidenceActionId}
+              onRequestEvidence={handleRequestEvidenceClick}
             />
           </div>
           <div className="order-1 lg:order-2">
@@ -527,6 +663,19 @@ export default function ActionCenterPage() {
         disabled={startState.phase === 'starting'}
         onCancel={closeStartModal}
         onConfirm={handleStartConfirm}
+      />
+
+      {/* Request Evidence confirmation modal */}
+      <RequestEvidenceModal
+        open={confirmingEvidenceAction !== null}
+        actionTitle={confirmingEvidenceAction?.title ?? ''}
+        actionPillar={confirmingEvidenceAction?.pillar_name ?? ''}
+        evidenceRequirements={confirmingEvidenceAction?.evidence_requirements ?? null}
+        estimatedDays={confirmingEvidenceAction?.estimated_completion_days ?? null}
+        certificationRequired={confirmingEvidenceAction?.certification_requirement === true}
+        disabled={evidenceState.phase === 'requesting'}
+        onCancel={closeEvidenceModal}
+        onConfirm={handleRequestEvidenceConfirm}
       />
     </div>
   );

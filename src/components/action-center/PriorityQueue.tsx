@@ -13,6 +13,10 @@ interface PriorityQueueProps {
   canStartForAction?: (action: WorkflowActionWithEvidence) => boolean;
   startingActionId?: string | null;
   onStart?: (actionId: string) => void;
+  /** Forwarded to each ActionCard for the Request Evidence button. */
+  canRequestEvidenceForAction?: (action: WorkflowActionWithEvidence) => boolean;
+  requestingEvidenceActionId?: string | null;
+  onRequestEvidence?: (actionId: string) => void;
 }
 
 const PRIORITY_ACCENT: Record<ActionPriority, string> = {
@@ -22,7 +26,10 @@ const PRIORITY_ACCENT: Record<ActionPriority, string> = {
   Low: 'rgba(255,255,255,0.4)',
 };
 
-export function PriorityQueue({ groups, canStartForAction, startingActionId, onStart }: PriorityQueueProps) {
+export function PriorityQueue({
+  groups, canStartForAction, startingActionId, onStart,
+  canRequestEvidenceForAction, requestingEvidenceActionId, onRequestEvidence,
+}: PriorityQueueProps) {
   const [collapsed, setCollapsed] = useState<Set<ActionPriority>>(new Set());
 
   const toggle = (p: ActionPriority) => {
@@ -100,6 +107,9 @@ export function PriorityQueue({ groups, canStartForAction, startingActionId, onS
                     canStart={canStartForAction?.(action) ?? false}
                     isStarting={startingActionId === action.id}
                     onStart={onStart}
+                    canRequestEvidence={canRequestEvidenceForAction?.(action) ?? false}
+                    isRequestingEvidence={requestingEvidenceActionId === action.id}
+                    onRequestEvidence={onRequestEvidence}
                   />
                 ))}
               </div>
