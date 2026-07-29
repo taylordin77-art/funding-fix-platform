@@ -565,3 +565,140 @@ export async function submitActionEvidence(input: SubmitActionEvidenceInput): Pr
     message: 'Evidence submitted for verification.',
   };
 }
+
+/* ============================================================
+   claim_action_for_review: Submitted -> Under Review + claim ownership
+   ============================================================ */
+
+export type ClaimActionForReviewErrorCode =
+  | 'NOT_AUTHENTICATED'
+  | 'ACTION_NOT_FOUND'
+  | 'NOT_AUTHORIZED'
+  | 'ACTION_NOT_SUBMITTED'
+  | 'ACTION_ALREADY_CLAIMED'
+  | 'ACTION_ALREADY_CLAIMED_BY_YOU'
+  | 'NO_SUBMITTED_EVIDENCE'
+  | 'EVIDENCE_PACKAGE_INCONSISTENT'
+  | 'INVALID_ACTION_STATUS'
+  | 'ACTION_STATE_INCONSISTENT'
+  | 'UNEXPECTED_ERROR';
+
+export type ClaimActionForReviewResult =
+  | {
+      ok: true;
+      action: PersistedOrganizationAction;
+      evidence: EvidenceRecord[];
+      evidenceCount: number;
+      reviewerId: string;
+      claimedAt: string;
+      message: string;
+    }
+  | {
+      ok: false;
+      error: { code: ClaimActionForReviewErrorCode; message: string };
+    };
+
+const CLAIM_TOKEN_MAP: Record<string, ClaimActionForReviewErrorCode> = {
+  NOT_AUTHENTICATED: 'NOT_AUTHENTICATED',
+  ACTION_NOT_FOUND: 'ACTION_NOT_FOUND',
+  NOT_AUTHORIZED: 'NOT_AUTHORIZED',
+  ACTION_NOT_SUBMITTED: 'ACTION_NOT_SUBMITTED',
+  ACTION_ALREADY_CLAIMED: 'ACTION_ALREADY_CLAIMED',
+  ACTION_ALREADY_CLAIMED_BY_YOU: 'ACTION_ALREADY_CLAIMED_BY_YOU',
+  NO_SUBMITTED_EVIDENCE: 'NO_SUBMITTED_EVIDENCE',
+  EVIDENCE_PACKAGE_INCONSISTENT: 'EVIDENCE_PACKAGE_INCONSISTENT',
+  INVALID_ACTION_STATUS: 'INVALID_ACTION_STATUS',
+  ACTION_STATE_INCONSISTENT: 'ACTION_STATE_INCONSISTENT',
+};
+
+const CLAIM_SAFE_MESSAGES: Record<ClaimActionForReviewErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This review action could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to claim reviews.',
+  ACTION_NOT_SUBMITTED: 'This action has not been submitted for verification.',
+  ACTION_ALREADY_CLAIMED: 'This action has already been claimed by another reviewer.',
+  ACTION_ALREADY_CLAIMED_BY_YOU: 'You have already claimed this action.',
+  NO_SUBMITTED_EVIDENCE: 'This action does not contain submitted evidence to review.',
+  EVIDENCE_PACKAGE_INCONSISTENT: 'The submitted evidence package is in an inconsistent review state.',
+  INVALID_ACTION_STATUS: 'This action cannot be claimed from its current status.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid workflow state and cannot be claimed.',
+  UNEXPECTED_ERROR: 'We could not claim this review. Please try again.',
+};
+
+function mapClaimRpcError(message: string | undefined): ClaimActionForReviewErrorCode {
+  if (!message) return 'UNEXPECTED_ERROR';
+  const token = message.split(':')[0].trim();
+  return CLAIM_TOKEN_MAP[token] ?? 'UNEXPECTED_ERROR';
+}
+
+export async function claimActionForReview(actionId: string): Promise<ClaimActionForReviewResult> {
+  if (!actionId || actionId.trim() === '') {
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: CLAIM_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const { data, error } = (await supabase.rpc('claim_action_for_review', {
+    p_action_id: actionId,
+  })) as { data: unknown; error: { message?: string } | null };
+
+  if (error) {
+    console.error('[actionMutationService] claim_action_for_review RPC error:', error.message);
+    const code = mapClaimRpcError(error.message);
+    return { ok: false, error: { code, message: CLAIM_SAFE_MESSAGES[code] } };
+  }
+
+  if (!data || typeof data !== 'object') {
+    console.error('[actionMutationService] claim RPC returned unexpected shape');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: CLAIM_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const result = data as Record<string, unknown>;
+  const actionRow = result.action;
+  const evidenceArray = result.evidence;
+  const evidenceCount = result.evidence_count;
+  const reviewerId = result.reviewer_id;
+  const claimedAt = result.claimed_at;
+
+  if (!isActionRow(actionRow)) {
+    console.error('[actionMutationService] claim RPC returned invalid action row');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: CLAIM_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const action = actionRow as PersistedOrganizationAction;
+  if (action.status !== 'Submitted for Verification') {
+    console.error('[actionMutationService] claim RPC returned action status', action.status, 'expected Submitted for Verification');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: CLAIM_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (!Array.isArray(evidenceArray)) {
+    console.error('[actionMutationService] claim RPC returned non-array evidence');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: CLAIM_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const evidence = (evidenceArray as unknown[]).filter(isEvidenceRow) as EvidenceRecord[];
+  for (const ev of evidence) {
+    if (ev.verification_status !== 'Under Review') {
+      console.error('[actionMutationService] claim RPC returned evidence with status', ev.verification_status, 'expected Under Review');
+      return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: CLAIM_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+    }
+  }
+
+  if (typeof evidenceCount !== 'number' || evidenceCount !== evidence.length) {
+    console.error('[actionMutationService] claim RPC returned invalid evidence_count');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: CLAIM_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (typeof reviewerId !== 'string' || typeof claimedAt !== 'string') {
+    console.error('[actionMutationService] claim RPC returned invalid reviewer_id or claimed_at');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: CLAIM_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  return {
+    ok: true,
+    action,
+    evidence,
+    evidenceCount: evidenceCount,
+    reviewerId,
+    claimedAt,
+    message: 'Review claimed successfully.',
+  };
+}

@@ -298,6 +298,14 @@ export function ActionCard({
             <FileCheck2 size={14} /> View Evidence
           </button>
         )}
+        {action.status === 'Submitted for Verification' && action.review_claimed_by !== null && action.review_claimed_by !== undefined && (
+          <span
+            className="text-xs font-bold px-3 py-1.5 rounded-full inline-flex items-center gap-1"
+            style={{ background: 'rgba(28,116,134,0.12)', color: '#2592A8' }}
+          >
+            <Clock size={12} /> Review In Progress
+          </span>
+        )}
         {action.evidence_required === true && action.evidenceSummary.evidenceVerified === 0 && action.status !== 'Submitted for Verification' && (
           <button
             type="button"

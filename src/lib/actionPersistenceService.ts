@@ -46,6 +46,17 @@ export interface PersistedOrganizationAction {
   source_type: string | null;
   source_reference: string | null;
   created_at: string | null;
+  assigned_user_id: string | null;
+  due_date: string | null;
+  started_at: string | null;
+  submitted_at: string | null;
+  completed_at: string | null;
+  verified_at: string | null;
+  verified_by: string | null;
+  certification_requirement: boolean | null;
+  updated_at: string | null;
+  review_claimed_by: string | null;
+  review_claimed_at: string | null;
 }
 
 export type ActionPersistenceErrorCode =

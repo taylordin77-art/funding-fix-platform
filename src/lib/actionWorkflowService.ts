@@ -70,6 +70,8 @@ export interface WorkflowAction {
   verified_at: string | null;
   verified_by: string | null;
   updated_at: string | null;
+  review_claimed_by: string | null;
+  review_claimed_at: string | null;
 }
 
 /* ============================================================
