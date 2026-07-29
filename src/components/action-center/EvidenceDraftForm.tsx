@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, Link as LinkIcon, FileText, StickyNote } from 'lucide-react';
 import { EVIDENCE_TYPE_OPTIONS, EVIDENCE_TYPE_LABELS } from '../../lib/actionEvidenceService';
-import type { EvidenceType, EvidenceRecord } from '../../lib/actionWorkflowService';
+import type { EvidenceType } from '../../lib/actionWorkflowService';
+import type { OrganizationEvidenceRecord } from '../../lib/actionEvidenceService';
 
 interface EvidenceDraftFormProps {
   open: boolean;
   /** When editing an existing draft, pass its initial values. */
-  initialEvidence?: EvidenceRecord | null;
+  initialEvidence?: OrganizationEvidenceRecord | null;
   disabled?: boolean;
   onCancel: () => void;
   onSave: (values: {

@@ -26,7 +26,8 @@ import { RequestEvidenceModal } from '../components/action-center/RequestEvidenc
 import { SubmitEvidenceModal } from '../components/action-center/SubmitEvidenceModal';
 import { EvidenceWorkspaceModal } from '../components/action-center/EvidenceWorkspaceModal';
 import { getActionEvidence, EVIDENCE_TYPE_LABELS, type ActionEvidenceResult } from '../lib/actionEvidenceService';
-import type { EvidenceRecord, EvidenceType } from '../lib/actionWorkflowService';
+import type { EvidenceType } from '../lib/actionWorkflowService';
+import type { OrganizationEvidenceRecord } from '../lib/actionEvidenceService';
 import type {
   WorkflowActionWithEvidence,
   ActionPriority,
@@ -98,7 +99,7 @@ const EVIDENCE_ERROR_MESSAGES: Record<AwaitingEvidenceErrorCode, string> = {
 
 type DraftWorkspaceState =
   | { phase: 'idle' }
-  | { phase: 'open'; action: WorkflowActionWithEvidence; evidence: EvidenceRecord[]; loadingEvidence: boolean; saving: boolean; feedback: string | null };
+  | { phase: 'open'; action: WorkflowActionWithEvidence; evidence: OrganizationEvidenceRecord[]; loadingEvidence: boolean; saving: boolean; feedback: string | null };
 
 /* ---- Evidence Submission state ---- */
 

@@ -1,9 +1,8 @@
 /**
  * C-SHIFT Review Queue Read Service — read-only.
  *
- * Loads actions submitted for verification for the C-SHIFT reviewer queue.
- * Only C-SHIFT platform admins (profiles.role = 'admin') should access this
- * service; the page guards entry but RLS is the real boundary.
+ * Loads actions submitted for verification AND actions returned for revision
+ * for the C-SHIFT reviewer queue.
  *
  * No database writes.
  */
@@ -29,6 +28,7 @@ export interface ReviewQueueItem {
   certification_requirement: boolean | null;
   submitted_evidence_count: number;
   under_review_evidence_count: number;
+  revision_required_evidence_count: number;
   review_claimed_by: string | null;
   review_claimed_at: string | null;
 }
@@ -121,7 +121,7 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
       certification_requirement, review_claimed_by, review_claimed_at,
       organizations!inner ( name )
     `)
-    .eq('status', 'Submitted for Verification')
+    .in('status', ['Submitted for Verification', 'Revision Required'])
     .order('submitted_at', { ascending: true })) as { data: unknown; error: { message?: string; code?: string } | null };
 
   if (error) {
@@ -142,6 +142,7 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
   const actionIds = rows.map((r) => r.id);
   let submittedCounts: Record<string, number> = {};
   let underReviewCounts: Record<string, number> = {};
+  let revisionRequiredCounts: Record<string, number> = {};
 
   if (actionIds.length > 0) {
     const { data: evData, error: evError } = (await supabase
@@ -157,6 +158,8 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
           submittedCounts[ev.action_id] = (submittedCounts[ev.action_id] ?? 0) + 1;
         } else if (ev.verification_status === 'Under Review') {
           underReviewCounts[ev.action_id] = (underReviewCounts[ev.action_id] ?? 0) + 1;
+        } else if (ev.verification_status === 'Additional Information Required') {
+          revisionRequiredCounts[ev.action_id] = (revisionRequiredCounts[ev.action_id] ?? 0) + 1;
         }
       }
     }
@@ -177,6 +180,7 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
     certification_requirement: r.certification_requirement,
     submitted_evidence_count: submittedCounts[r.id] ?? 0,
     under_review_evidence_count: underReviewCounts[r.id] ?? 0,
+    revision_required_evidence_count: revisionRequiredCounts[r.id] ?? 0,
     review_claimed_by: r.review_claimed_by,
     review_claimed_at: r.review_claimed_at,
   }));
@@ -233,9 +237,11 @@ export async function getReviewAction(actionId: string): Promise<ReviewActionDet
 
   let submittedCount = 0;
   let underReviewCount = 0;
+  let revisionRequiredCount = 0;
   for (const ev of evidence) {
     if (ev.verification_status === 'Submitted') submittedCount++;
     else if (ev.verification_status === 'Under Review') underReviewCount++;
+    else if (ev.verification_status === 'Additional Information Required') revisionRequiredCount++;
   }
 
   const action: ReviewActionDetail = {
@@ -253,6 +259,7 @@ export async function getReviewAction(actionId: string): Promise<ReviewActionDet
     certification_requirement: row.certification_requirement,
     submitted_evidence_count: submittedCount,
     under_review_evidence_count: underReviewCount,
+    revision_required_evidence_count: revisionRequiredCount,
     review_claimed_by: row.review_claimed_by,
     review_claimed_at: row.review_claimed_at,
     evidence,

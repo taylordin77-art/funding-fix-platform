@@ -702,3 +702,206 @@ export async function claimActionForReview(actionId: string): Promise<ClaimActio
     message: 'Review claimed successfully.',
   };
 }
+
+/* ============================================================
+   request_additional_information: Under Review -> Additional Information Required
+   ============================================================ */
+
+export type RequestAdditionalInformationErrorCode =
+  | 'NOT_AUTHENTICATED'
+  | 'ACTION_NOT_FOUND'
+  | 'NOT_AUTHORIZED'
+  | 'ACTION_NOT_SUBMITTED'
+  | 'REVIEW_NOT_CLAIMED'
+  | 'REVIEW_NOT_OWNED'
+  | 'ACTION_ALREADY_RETURNED_FOR_REVISION'
+  | 'NO_EVIDENCE_SELECTED'
+  | 'EVIDENCE_NOT_FOUND'
+  | 'EVIDENCE_ACTION_MISMATCH'
+  | 'EVIDENCE_ORGANIZATION_MISMATCH'
+  | 'EVIDENCE_NOT_UNDER_REVIEW'
+  | 'EVIDENCE_REVIEWER_MISMATCH'
+  | 'ORGANIZATION_NOTES_REQUIRED'
+  | 'INVALID_ACTION_STATUS'
+  | 'ACTION_STATE_INCONSISTENT'
+  | 'UNEXPECTED_ERROR';
+
+export interface RequestAdditionalInformationInput {
+  actionId: string;
+  evidenceIds: string[];
+  organizationVisibleNotes: string;
+  reviewerNotes?: string | null;
+}
+
+export type RequestAdditionalInformationResult =
+  | {
+      ok: true;
+      action: PersistedOrganizationAction;
+      evidence: EvidenceRecord[];
+      evidenceCount: number;
+      reviewerId: string;
+      organizationVisibleNotes: string;
+      message: string;
+    }
+  | {
+      ok: false;
+      error: { code: RequestAdditionalInformationErrorCode; message: string };
+    };
+
+const REQUEST_TOKEN_MAP: Record<string, RequestAdditionalInformationErrorCode> = {
+  NOT_AUTHENTICATED: 'NOT_AUTHENTICATED',
+  ACTION_NOT_FOUND: 'ACTION_NOT_FOUND',
+  NOT_AUTHORIZED: 'NOT_AUTHORIZED',
+  ACTION_NOT_SUBMITTED: 'ACTION_NOT_SUBMITTED',
+  REVIEW_NOT_CLAIMED: 'REVIEW_NOT_CLAIMED',
+  REVIEW_NOT_OWNED: 'REVIEW_NOT_OWNED',
+  ACTION_ALREADY_RETURNED_FOR_REVISION: 'ACTION_ALREADY_RETURNED_FOR_REVISION',
+  NO_EVIDENCE_SELECTED: 'NO_EVIDENCE_SELECTED',
+  EVIDENCE_NOT_FOUND: 'EVIDENCE_NOT_FOUND',
+  EVIDENCE_ACTION_MISMATCH: 'EVIDENCE_ACTION_MISMATCH',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'EVIDENCE_ORGANIZATION_MISMATCH',
+  EVIDENCE_NOT_UNDER_REVIEW: 'EVIDENCE_NOT_UNDER_REVIEW',
+  EVIDENCE_REVIEWER_MISMATCH: 'EVIDENCE_REVIEWER_MISMATCH',
+  ORGANIZATION_NOTES_REQUIRED: 'ORGANIZATION_NOTES_REQUIRED',
+  INVALID_ACTION_STATUS: 'INVALID_ACTION_STATUS',
+  ACTION_STATE_INCONSISTENT: 'ACTION_STATE_INCONSISTENT',
+};
+
+const REQUEST_SAFE_MESSAGES: Record<RequestAdditionalInformationErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This review action could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to make this review decision.',
+  ACTION_NOT_SUBMITTED: 'This action has not been submitted for review.',
+  REVIEW_NOT_CLAIMED: 'This action has not been claimed for review.',
+  REVIEW_NOT_OWNED: 'You are not the assigned reviewer for this action.',
+  ACTION_ALREADY_RETURNED_FOR_REVISION: 'This action has already been returned to the organization for revision.',
+  NO_EVIDENCE_SELECTED: 'Select at least one Under Review evidence record.',
+  EVIDENCE_NOT_FOUND: 'One or more selected evidence records could not be found.',
+  EVIDENCE_ACTION_MISMATCH: 'One or more selected evidence records do not belong to this action.',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'One or more selected evidence records do not belong to this organization.',
+  EVIDENCE_NOT_UNDER_REVIEW: 'One or more selected evidence records are no longer Under Review.',
+  EVIDENCE_REVIEWER_MISMATCH: 'One or more selected evidence records are assigned to another reviewer.',
+  ORGANIZATION_NOTES_REQUIRED: 'Provide clear instructions explaining what the organization needs to revise.',
+  INVALID_ACTION_STATUS: 'This action cannot be returned for revision from its current status.',
+  ACTION_STATE_INCONSISTENT: 'This review has an invalid workflow state and could not be updated.',
+  UNEXPECTED_ERROR: 'We could not request additional information. Please try again.',
+};
+
+function mapRequestRpcError(message: string | undefined): RequestAdditionalInformationErrorCode {
+  if (!message) return 'UNEXPECTED_ERROR';
+  const token = message.split(':')[0].trim();
+  return REQUEST_TOKEN_MAP[token] ?? 'UNEXPECTED_ERROR';
+}
+
+export async function requestAdditionalInformation(
+  input: RequestAdditionalInformationInput,
+): Promise<RequestAdditionalInformationResult> {
+  // 1. Validate action ID
+  if (!input.actionId || input.actionId.trim() === '') {
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  // 2. Validate evidence IDs — deduplicate, require at least one
+  const uniqueIds = [...new Set(input.evidenceIds.filter((id) => id && id.trim() !== ''))];
+  if (uniqueIds.length === 0) {
+    return { ok: false, error: { code: 'NO_EVIDENCE_SELECTED', message: REQUEST_SAFE_MESSAGES.NO_EVIDENCE_SELECTED } };
+  }
+
+  // 3. Validate required organization-visible notes
+  const trimmedOrgNotes = (input.organizationVisibleNotes ?? '').trim();
+  if (trimmedOrgNotes === '') {
+    return { ok: false, error: { code: 'ORGANIZATION_NOTES_REQUIRED', message: REQUEST_SAFE_MESSAGES.ORGANIZATION_NOTES_REQUIRED } };
+  }
+
+  // 4. Call the RPC exactly once
+  const { data, error } = (await supabase.rpc('request_additional_information', {
+    p_action_id: input.actionId,
+    p_evidence_ids: uniqueIds,
+    p_organization_visible_notes: trimmedOrgNotes,
+    p_reviewer_notes: input.reviewerNotes?.trim() || null,
+  })) as { data: unknown; error: { message?: string } | null };
+
+  if (error) {
+    console.error('[actionMutationService] request_additional_information RPC error:', error.message);
+    const code = mapRequestRpcError(error.message);
+    return { ok: false, error: { code, message: REQUEST_SAFE_MESSAGES[code] } };
+  }
+
+  if (!data || typeof data !== 'object') {
+    console.error('[actionMutationService] request RPC returned unexpected shape');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const result = data as Record<string, unknown>;
+  const actionRow = result.action;
+  const evidenceArray = result.evidence;
+  const evidenceCount = result.evidence_count;
+  const reviewerId = result.reviewer_id;
+  const orgNotes = result.organization_visible_notes;
+
+  // 5. Validate returned action
+  if (!isActionRow(actionRow)) {
+    console.error('[actionMutationService] request RPC returned invalid action row');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const action = actionRow as PersistedOrganizationAction;
+
+  // 6. Confirm action.status = 'Revision Required'
+  if (action.status !== 'Revision Required') {
+    console.error('[actionMutationService] request RPC returned action status', action.status, 'expected Revision Required');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  // 7. Validate returned evidence
+  if (!Array.isArray(evidenceArray)) {
+    console.error('[actionMutationService] request RPC returned non-array evidence');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const evidence = (evidenceArray as unknown[]).filter(isEvidenceRow) as EvidenceRecord[];
+
+  // 8. Confirm every returned record has verification_status = 'Additional Information Required'
+  for (const ev of evidence) {
+    if (ev.verification_status !== 'Additional Information Required') {
+      console.error('[actionMutationService] request RPC returned evidence with status', ev.verification_status, 'expected Additional Information Required');
+      return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+    }
+  }
+
+  // 9. Confirm organization_visible_notes is populated
+  if (typeof orgNotes !== 'string' || orgNotes.trim() === '') {
+    console.error('[actionMutationService] request RPC returned empty organization_visible_notes');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  // 10. Confirm reviewed_by remains populated
+  for (const ev of evidence) {
+    if (!ev.reviewed_by) {
+      console.error('[actionMutationService] request RPC returned evidence with null reviewed_by');
+      return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+    }
+  }
+
+  // 11. Validate evidenceCount
+  if (typeof evidenceCount !== 'number' || evidenceCount !== evidence.length) {
+    console.error('[actionMutationService] request RPC returned invalid evidence_count');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  // 12. Validate reviewerId
+  if (typeof reviewerId !== 'string') {
+    console.error('[actionMutationService] request RPC returned invalid reviewer_id');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REQUEST_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  return {
+    ok: true,
+    action,
+    evidence,
+    evidenceCount: evidenceCount,
+    reviewerId,
+    organizationVisibleNotes: orgNotes,
+    message: 'Additional information requested.',
+  };
+}

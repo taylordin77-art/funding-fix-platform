@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldCheck, Clock, FileCheck2, UserCheck, Loader2, AlertCircle, ChevronRight, Inbox } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { getReviewQueue, type ReviewQueueItem } from '../lib/reviewQueueService';
-import { claimActionForReview, type ClaimActionForReviewErrorCode } from '../lib/actionMutationService';
+import { getReviewQueue, getReviewAction, type ReviewQueueItem, type ReviewActionDetail } from '../lib/reviewQueueService';
+import { claimActionForReview, requestAdditionalInformation, type ClaimActionForReviewErrorCode, type RequestAdditionalInformationErrorCode } from '../lib/actionMutationService';
+import type { EvidenceType } from '../lib/actionWorkflowService';
 import { ClaimReviewModal } from '../components/reviews/ClaimReviewModal';
 import { ReviewActionPanel } from '../components/reviews/ReviewActionPanel';
-import type { ReviewActionDetail } from '../lib/reviewQueueService';
+import { RequestInformationModal } from '../components/reviews/RequestInformationModal';
 
 type QueueState =
   | { phase: 'loading' }
@@ -26,7 +27,14 @@ type DetailState =
   | { phase: 'ready'; action: ReviewActionDetail }
   | { phase: 'error'; message: string };
 
-const SAFE_MESSAGES: Record<ClaimActionForReviewErrorCode, string> = {
+type RequestState =
+  | { phase: 'idle' }
+  | { phase: 'confirming'; action: ReviewActionDetail; evidenceIds: string[]; orgNotes: string; reviewerNotes: string }
+  | { phase: 'processing'; action: ReviewActionDetail; evidenceIds: string[]; orgNotes: string; reviewerNotes: string }
+  | { phase: 'success'; message: string }
+  | { phase: 'error'; message: string; reloadAction: boolean };
+
+const CLAIM_MESSAGES: Record<ClaimActionForReviewErrorCode, string> = {
   NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
   ACTION_NOT_FOUND: 'This review action could not be found.',
   NOT_AUTHORIZED: 'You do not have permission to claim reviews.',
@@ -39,6 +47,33 @@ const SAFE_MESSAGES: Record<ClaimActionForReviewErrorCode, string> = {
   ACTION_STATE_INCONSISTENT: 'This action has an invalid workflow state and cannot be claimed.',
   UNEXPECTED_ERROR: 'We could not claim this review. Please try again.',
 };
+
+const REQUEST_MESSAGES: Record<RequestAdditionalInformationErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This review action could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to make this review decision.',
+  ACTION_NOT_SUBMITTED: 'This action has not been submitted for review.',
+  REVIEW_NOT_CLAIMED: 'This action has not been claimed for review.',
+  REVIEW_NOT_OWNED: 'You are not the assigned reviewer for this action.',
+  ACTION_ALREADY_RETURNED_FOR_REVISION: 'This action has already been returned to the organization for revision.',
+  NO_EVIDENCE_SELECTED: 'Select at least one Under Review evidence record.',
+  EVIDENCE_NOT_FOUND: 'One or more selected evidence records could not be found.',
+  EVIDENCE_ACTION_MISMATCH: 'One or more selected evidence records do not belong to this action.',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'One or more selected evidence records do not belong to this organization.',
+  EVIDENCE_NOT_UNDER_REVIEW: 'One or more selected evidence records are no longer Under Review.',
+  EVIDENCE_REVIEWER_MISMATCH: 'One or more selected evidence records are assigned to another reviewer.',
+  ORGANIZATION_NOTES_REQUIRED: 'Provide clear instructions explaining what the organization needs to revise.',
+  INVALID_ACTION_STATUS: 'This action cannot be returned for revision from its current status.',
+  ACTION_STATE_INCONSISTENT: 'This review has an invalid workflow state and could not be updated.',
+  UNEXPECTED_ERROR: 'We could not request additional information. Please try again.',
+};
+
+const STALE_STATE_CODES: RequestAdditionalInformationErrorCode[] = [
+  'ACTION_ALREADY_RETURNED_FOR_REVISION',
+  'EVIDENCE_NOT_UNDER_REVIEW',
+  'EVIDENCE_REVIEWER_MISMATCH',
+  'REVIEW_NOT_OWNED',
+];
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
@@ -53,6 +88,7 @@ export function ReviewQueuePage() {
   const [queueState, setQueueState] = useState<QueueState>({ phase: 'loading' });
   const [claimState, setClaimState] = useState<ClaimState>({ phase: 'idle' });
   const [detailState, setDetailState] = useState<DetailState>({ phase: 'idle' });
+  const [requestState, setRequestState] = useState<RequestState>({ phase: 'idle' });
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Check reviewer authorization
@@ -84,6 +120,15 @@ export function ReviewQueuePage() {
     if (isReviewer === true) loadQueue();
   }, [isReviewer, loadQueue]);
 
+  const reloadDetail = useCallback(async (actionId: string) => {
+    const result = await getReviewAction(actionId);
+    if (result.ok) {
+      setDetailState({ phase: 'ready', action: result.action });
+    } else {
+      setDetailState({ phase: 'error', message: 'Unable to reload this review action.' });
+    }
+  }, []);
+
   const handleClaimClick = useCallback((item: ReviewQueueItem) => {
     setClaimState({ phase: 'confirming', item });
   }, []);
@@ -103,12 +148,12 @@ export function ReviewQueuePage() {
 
     const code = result.error.code;
     if (code === 'ACTION_ALREADY_CLAIMED' || code === 'ACTION_ALREADY_CLAIMED_BY_YOU') {
-      setClaimState({ phase: 'error', message: SAFE_MESSAGES[code], reloadQueue: true });
+      setClaimState({ phase: 'error', message: CLAIM_MESSAGES[code], reloadQueue: true });
       await loadQueue();
       return;
     }
 
-    setClaimState({ phase: 'error', message: SAFE_MESSAGES[code], reloadQueue: false });
+    setClaimState({ phase: 'error', message: CLAIM_MESSAGES[code], reloadQueue: false });
   }, [claimState, loadQueue]);
 
   const closeClaimModal = useCallback(() => {
@@ -118,7 +163,6 @@ export function ReviewQueuePage() {
 
   const handleViewDetail = useCallback(async (actionId: string) => {
     setDetailState({ phase: 'loading' });
-    const { getReviewAction } = await import('../lib/reviewQueueService');
     const result = await getReviewAction(actionId);
     if (result.ok) {
       setDetailState({ phase: 'ready', action: result.action });
@@ -130,6 +174,47 @@ export function ReviewQueuePage() {
   const closeDetail = useCallback(() => {
     setDetailState({ phase: 'idle' });
   }, []);
+
+  // Request Additional Information workflow
+  const handleRequestInformation = useCallback(async (_actionId: string, evidenceIds: string[], orgNotes: string, reviewerNotes: string) => {
+    if (!detailState || detailState.phase !== 'ready') return;
+    setRequestState({ phase: 'confirming', action: detailState.action, evidenceIds, orgNotes, reviewerNotes });
+  }, [detailState]);
+
+  const handleRequestConfirm = useCallback(async () => {
+    if (requestState.phase !== 'confirming') return;
+    const { action, evidenceIds, orgNotes, reviewerNotes } = requestState;
+    setRequestState({ phase: 'processing', action, evidenceIds, orgNotes, reviewerNotes });
+
+    const result = await requestAdditionalInformation({
+      actionId: action.id,
+      evidenceIds,
+      organizationVisibleNotes: orgNotes,
+      reviewerNotes: reviewerNotes || null,
+    });
+
+    if (result.ok) {
+      setRequestState({ phase: 'success', message: `Additional information requested. ${result.evidenceCount} evidence item(s) were returned to the organization for revision.` });
+      await loadQueue();
+      await reloadDetail(action.id);
+      return;
+    }
+
+    const code = result.error.code;
+    if (STALE_STATE_CODES.includes(code)) {
+      setRequestState({ phase: 'error', message: REQUEST_MESSAGES[code], reloadAction: true });
+      await loadQueue();
+      await reloadDetail(action.id);
+      return;
+    }
+
+    setRequestState({ phase: 'error', message: REQUEST_MESSAGES[code], reloadAction: false });
+  }, [requestState, loadQueue, reloadDetail]);
+
+  const closeRequestModal = useCallback(() => {
+    if (requestState.phase === 'processing') return;
+    setRequestState({ phase: 'idle' });
+  }, [requestState.phase]);
 
   // Access denied state
   if (isReviewer === false) {
@@ -163,9 +248,21 @@ export function ReviewQueuePage() {
   }
 
   const items = queueState.phase === 'ready' ? queueState.items : [];
-  const available = items.filter((i) => i.review_claimed_by === null);
+  const available = items.filter((i) => i.review_claimed_by === null && i.status === 'Submitted for Verification');
   const myReviews = items.filter((i) => i.review_claimed_by === currentUserId);
   const otherReviews = items.filter((i) => i.review_claimed_by !== null && i.review_claimed_by !== currentUserId);
+
+  // Request modal props
+  const requestModalOpen = requestState.phase === 'confirming' || requestState.phase === 'processing';
+  const requestModalAction = requestModalOpen ? requestState.action : null;
+  const requestModalEvidenceIds = requestModalOpen ? requestState.evidenceIds : [];
+  const requestModalOrgNotes = requestModalOpen ? requestState.orgNotes : '';
+  const requestModalEvidenceTypes: EvidenceType[] = requestModalAction
+    ? requestModalEvidenceIds
+        .map((id) => requestModalAction.evidence.find((e) => e.id === id))
+        .filter((e): e is NonNullable<typeof e> => e !== undefined)
+        .map((e) => e.evidence_type)
+    : [];
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-10">
@@ -183,7 +280,7 @@ export function ReviewQueuePage() {
         </div>
       </div>
 
-      {/* Success banner */}
+      {/* Claim success banner */}
       {claimState.phase === 'success' && (
         <div
           className="card-premium p-4 mb-6 flex items-center justify-between gap-4"
@@ -204,7 +301,7 @@ export function ReviewQueuePage() {
         </div>
       )}
 
-      {/* Error banner */}
+      {/* Claim error banner */}
       {claimState.phase === 'error' && (
         <div
           className="card-premium p-4 mb-6 flex items-start justify-between gap-4"
@@ -220,6 +317,49 @@ export function ReviewQueuePage() {
             className="flex-shrink-0"
             style={{ color: 'rgba(255,255,255,0.5)' }}
             onClick={() => setClaimState({ phase: 'idle' })}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Request success banner */}
+      {requestState.phase === 'success' && (
+        <div
+          className="card-premium p-4 mb-6 flex items-center justify-between gap-4"
+          style={{ borderColor: 'rgba(212,168,67,0.3)' }}
+        >
+          <div className="flex items-center gap-3">
+            <UserCheck size={18} style={{ color: '#D4A843' }} />
+            <p className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>{requestState.message}</p>
+          </div>
+          <button
+            type="button"
+            className="text-xs font-semibold px-3 py-1.5 rounded-full"
+            style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+            onClick={() => setRequestState({ phase: 'idle' })}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Request error banner */}
+      {requestState.phase === 'error' && (
+        <div
+          className="card-premium p-4 mb-6 flex items-start justify-between gap-4"
+          style={{ borderColor: 'rgba(224,101,107,0.3)' }}
+        >
+          <div className="flex items-start gap-3">
+            <AlertCircle size={18} style={{ color: '#E0656B', marginTop: 2 }} />
+            <p className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>{requestState.message}</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            className="flex-shrink-0"
+            style={{ color: 'rgba(255,255,255,0.5)' }}
+            onClick={() => setRequestState({ phase: 'idle' })}
           >
             ×
           </button>
@@ -260,7 +400,6 @@ export function ReviewQueuePage() {
             </div>
           ) : (
             <div className="space-y-8">
-              {/* Available for Review */}
               {available.length > 0 && (
                 <ReviewGroup
                   title="Available for Review"
@@ -270,8 +409,6 @@ export function ReviewQueuePage() {
                   onView={handleViewDetail}
                 />
               )}
-
-              {/* My Active Reviews */}
               {myReviews.length > 0 && (
                 <ReviewGroup
                   title="My Active Reviews"
@@ -281,8 +418,6 @@ export function ReviewQueuePage() {
                   onView={handleViewDetail}
                 />
               )}
-
-              {/* Claimed by Another Reviewer */}
               {otherReviews.length > 0 && (
                 <ReviewGroup
                   title="Claimed by Another Reviewer"
@@ -311,6 +446,21 @@ export function ReviewQueuePage() {
         onConfirm={handleClaimConfirm}
       />
 
+      {/* Request Information confirmation modal */}
+      <RequestInformationModal
+        open={requestModalOpen}
+        organizationName={requestModalAction?.organization_name ?? ''}
+        actionTitle={requestModalAction?.title ?? ''}
+        actionPillar={requestModalAction?.pillar_name ?? ''}
+        selectedEvidenceCount={requestModalEvidenceIds.length}
+        selectedEvidenceTypes={requestModalEvidenceTypes}
+        organizationVisibleNotes={requestModalOrgNotes}
+        certificationRequired={requestModalAction?.certification_requirement === true}
+        disabled={requestState.phase === 'processing'}
+        onCancel={closeRequestModal}
+        onConfirm={handleRequestConfirm}
+      />
+
       {/* Detail modal */}
       {detailState.phase === 'ready' && (
         <div
@@ -335,7 +485,12 @@ export function ReviewQueuePage() {
                 Close ×
               </button>
             </div>
-            <ReviewActionPanel action={detailState.action} />
+            <ReviewActionPanel
+              action={detailState.action}
+              currentUserId={currentUserId}
+              onRequestInformation={handleRequestInformation}
+              processing={requestState.phase === 'processing'}
+            />
           </div>
         </div>
       )}
@@ -365,6 +520,7 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
         {items.map((item) => {
           const isMine = item.review_claimed_by === currentUserId;
           const isOther = item.review_claimed_by !== null && item.review_claimed_by !== currentUserId;
+          const isRevision = item.status === 'Revision Required';
           return (
             <div
               key={item.id}
@@ -385,7 +541,7 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
                       </span>
                     )}
                     <span className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>
-                      {item.submitted_evidence_count + item.under_review_evidence_count} evidence
+                      {item.under_review_evidence_count + item.revision_required_evidence_count} evidence
                     </span>
                   </div>
                   <div className="flex items-center gap-3 text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>
@@ -393,9 +549,14 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
                   </div>
                 </div>
                 <div className="flex flex-col gap-2 flex-shrink-0">
-                  {isMine && (
+                  {isMine && !isRevision && (
                     <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(52,180,120,0.12)', color: '#34B478' }}>
                       Review In Progress
+                    </span>
+                  )}
+                  {isMine && isRevision && (
+                    <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(212,168,67,0.12)', color: '#D4A843' }}>
+                      Waiting for Organization Revision
                     </span>
                   )}
                   {isOther && (

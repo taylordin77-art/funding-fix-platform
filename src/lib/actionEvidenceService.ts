@@ -6,7 +6,7 @@
  * admin) is returned. No writes.
  */
 import { supabase } from './supabase';
-import type { EvidenceRecord, EvidenceType } from './actionWorkflowService';
+import type { EvidenceRecord, EvidenceType, EvidenceVerificationStatus } from './actionWorkflowService';
 
 /* ============================================================
    Types
@@ -20,7 +20,7 @@ export type ActionEvidenceErrorCode =
   | 'UNEXPECTED_ERROR';
 
 export type ActionEvidenceResult =
-  | { ok: true; actionId: string; evidence: EvidenceRecord[] }
+  | { ok: true; actionId: string; evidence: OrganizationEvidenceRecord[] }
   | { ok: false; error: { code: ActionEvidenceErrorCode; message: string } };
 
 const SAFE_MESSAGES: Record<ActionEvidenceErrorCode, string> = {
@@ -30,6 +30,61 @@ const SAFE_MESSAGES: Record<ActionEvidenceErrorCode, string> = {
   QUERY_FAILED: 'Unable to load evidence at this time.',
   UNEXPECTED_ERROR: 'Unable to load evidence at this time.',
 };
+
+/* ============================================================
+   Organization-safe evidence DTO
+   ============================================================ */
+
+/**
+ * Organization-safe evidence record. Excludes reviewer_notes, reviewed_by,
+ * submitted_by, and any internal reviewer identity fields. This is the only
+ * type that should be consumed by organization-facing React components.
+ */
+export interface OrganizationEvidenceRecord {
+  id: string;
+  action_id: string;
+  evidence_type: EvidenceType;
+  verification_status: EvidenceVerificationStatus;
+  file_url: string | null;
+  external_url: string | null;
+  written_response: string | null;
+  submission_notes: string | null;
+  organization_visible_notes: string | null;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * Strip internal reviewer fields from an EvidenceRecord before exposing it
+ * to organization-facing code. Never expose reviewer_notes, reviewed_by, or
+ * submitted_by to the organization.
+ */
+export function toOrganizationEvidence(ev: EvidenceRecord): OrganizationEvidenceRecord {
+  return {
+    id: ev.id,
+    action_id: ev.action_id,
+    evidence_type: ev.evidence_type,
+    verification_status: ev.verification_status,
+    file_url: ev.file_url,
+    external_url: ev.external_url,
+    written_response: ev.written_response,
+    submission_notes: ev.submission_notes,
+    organization_visible_notes: ev.organization_visible_notes,
+    submitted_at: ev.submitted_at,
+    reviewed_at: ev.reviewed_at,
+    created_at: ev.created_at,
+    updated_at: ev.updated_at,
+  };
+}
+
+/**
+ * Map an array of EvidenceRecord to the organization-safe DTO.
+ */
+export function toOrganizationEvidenceList(evidence: EvidenceRecord[]): OrganizationEvidenceRecord[] {
+  return evidence.map(toOrganizationEvidence);
+}
 
 /* ============================================================
    Internal: validate the returned row shape
@@ -57,6 +112,8 @@ export async function getActionEvidence(actionId: string): Promise<ActionEvidenc
     return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: SAFE_MESSAGES.UNEXPECTED_ERROR } };
   }
 
+  // Select all columns (RLS-protected) but strip internal fields via DTO
+  // before returning to organization-facing React.
   const { data, error } = (await supabase
     .from('action_evidence')
     .select('*')
@@ -76,7 +133,8 @@ export async function getActionEvidence(actionId: string): Promise<ActionEvidenc
     return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: SAFE_MESSAGES.UNEXPECTED_ERROR } };
   }
 
-  const evidence = (data as unknown[]).filter(isEvidenceRow) as EvidenceRecord[];
+  const rawEvidence = (data as unknown[]).filter(isEvidenceRow) as EvidenceRecord[];
+  const evidence = toOrganizationEvidenceList(rawEvidence);
 
   return { ok: true, actionId, evidence };
 }

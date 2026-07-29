@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { X, Plus, Pencil, FileCheck2, ShieldCheck, Clock, Inbox, Send, AlertCircle } from 'lucide-react';
-import type { WorkflowActionWithEvidence, EvidenceRecord } from '../../lib/actionWorkflowService';
-import { EVIDENCE_TYPE_LABELS } from '../../lib/actionEvidenceService';
+import type { WorkflowActionWithEvidence } from '../../lib/actionWorkflowService';
+import { EVIDENCE_TYPE_LABELS, type OrganizationEvidenceRecord } from '../../lib/actionEvidenceService';
+import { MessageSquare } from 'lucide-react';
 import { EvidenceDraftForm } from './EvidenceDraftForm';
 import type { EvidenceType } from '../../lib/actionWorkflowService';
 
 interface EvidenceWorkspaceModalProps {
   open: boolean;
   action: WorkflowActionWithEvidence | null;
-  evidence: EvidenceRecord[];
+  evidence: OrganizationEvidenceRecord[];
   loadingEvidence: boolean;
   saving: boolean;
   submitting: boolean;
@@ -52,7 +53,7 @@ export function EvidenceWorkspaceModal({
 }: EvidenceWorkspaceModalProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [showForm, setShowForm] = useState(false);
-  const [editingDraft, setEditingDraft] = useState<EvidenceRecord | null>(null);
+  const [editingDraft, setEditingDraft] = useState<OrganizationEvidenceRecord | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -84,6 +85,7 @@ export function EvidenceWorkspaceModal({
 
   const isAwaitingEvidence = action.status === 'Awaiting Evidence';
   const isSubmitted = action.status === 'Submitted for Verification';
+  const isRevisionRequired = action.status === 'Revision Required';
   const busy = saving || submitting;
 
   const handleClose = () => {
@@ -98,7 +100,7 @@ export function EvidenceWorkspaceModal({
     setShowForm(true);
   };
 
-  const handleEditClick = (ev: EvidenceRecord) => {
+  const handleEditClick = (ev: OrganizationEvidenceRecord) => {
     setEditingDraft(ev);
     setShowForm(true);
   };
@@ -238,6 +240,32 @@ export function EvidenceWorkspaceModal({
           />
         )}
 
+        {/* Revision Required banner */}
+        {isRevisionRequired && (
+          <div
+            className="rounded-xl px-4 py-4 mb-5"
+            style={{ background: 'rgba(212,168,67,0.06)', border: '1px solid rgba(212,168,67,0.25)' }}
+          >
+            <div className="flex items-start gap-3 mb-3">
+              <MessageSquare size={18} style={{ color: '#D4A843', flexShrink: 0, marginTop: 1 }} />
+              <div>
+                <h3 className="text-sm font-bold mb-1" style={{ color: '#D4A843' }}>Additional Information Required</h3>
+                <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                  The C-SHIFT reviewer has requested additional information or corrections for some of your evidence. Please review the revision instructions below.
+                </p>
+              </div>
+            </div>
+            <div
+              className="rounded-lg px-3 py-2"
+              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
+            >
+              <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                Evidence revision and resubmission will be available in the next workflow step.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Evidence list */}
         {!showForm && (
           <>
@@ -268,6 +296,7 @@ export function EvidenceWorkspaceModal({
                 {evidence.map((ev) => {
                   const badge = STATUS_BADGE[ev.verification_status] ?? STATUS_BADGE.Draft;
                   const isDraft = ev.verification_status === 'Draft';
+                  const isRevision = ev.verification_status === 'Additional Information Required';
                   const isSelected = selectedIds.has(ev.id);
                   const canSelect = isDraft && isAwaitingEvidence && canManageEvidence && !busy;
                   return (
@@ -314,6 +343,20 @@ export function EvidenceWorkspaceModal({
                             )}
                             {ev.submission_notes && (
                               <p className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>Notes: {ev.submission_notes}</p>
+                            )}
+                            {/* Organization-visible revision instructions */}
+                            {isRevision && ev.organization_visible_notes && (
+                              <div
+                                className="mt-2 rounded-lg px-3 py-2"
+                                style={{ background: 'rgba(212,168,67,0.06)', border: '1px solid rgba(212,168,67,0.15)' }}
+                              >
+                                <p className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: '#D4A843' }}>
+                                  <MessageSquare size={10} className="inline mr-1" /> Revision Instructions
+                                </p>
+                                <p className="text-xs leading-relaxed whitespace-pre-line" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                                  {ev.organization_visible_notes}
+                                </p>
+                              </div>
                             )}
                             <div className="flex items-center gap-3 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>
                               <span className="flex items-center gap-1"><Clock size={10} /> {formatDate(ev.created_at)}</span>
