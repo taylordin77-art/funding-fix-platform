@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw, CheckCircle2, X } from 'lucide-react';
 import { getOrganizationWorkflow, type OrganizationWorkflow } from '../lib/actionWorkflowService';
 import { persistAssessmentActionPlan, type ActionPersistenceErrorCode } from '../lib/actionPersistenceService';
-import { startAction, type StartActionErrorCode, moveActionToAwaitingEvidence, type AwaitingEvidenceErrorCode, createEvidenceDraft, updateEvidenceDraft, type EvidenceDraftErrorCode, submitActionEvidence, type SubmitActionEvidenceErrorCode } from '../lib/actionMutationService';
+import { startAction, type StartActionErrorCode, moveActionToAwaitingEvidence, type AwaitingEvidenceErrorCode, createEvidenceDraft, updateEvidenceDraft, type EvidenceDraftErrorCode, submitActionEvidence, type SubmitActionEvidenceErrorCode, reviseEvidenceDraft, createRevisionEvidenceDraft, resubmitRevisedEvidence, type ReviseEvidenceDraftErrorCode, type ResubmitRevisedEvidenceErrorCode } from '../lib/actionMutationService';
 import {
   getActionAuthContext,
   userCanStartAction,
@@ -25,6 +25,7 @@ import { StartActionModal } from '../components/action-center/StartActionModal';
 import { RequestEvidenceModal } from '../components/action-center/RequestEvidenceModal';
 import { SubmitEvidenceModal } from '../components/action-center/SubmitEvidenceModal';
 import { EvidenceWorkspaceModal } from '../components/action-center/EvidenceWorkspaceModal';
+import { ResubmitEvidenceModal } from '../components/action-center/ResubmitEvidenceModal';
 import { getActionEvidence, EVIDENCE_TYPE_LABELS, type ActionEvidenceResult } from '../lib/actionEvidenceService';
 import type { EvidenceType } from '../lib/actionWorkflowService';
 import type { OrganizationEvidenceRecord } from '../lib/actionEvidenceService';
@@ -109,6 +110,52 @@ type SubmitState =
   | { phase: 'submitting'; action: WorkflowActionWithEvidence; selectedEvidenceIds: string[] }
   | { phase: 'success'; actionTitle: string; evidenceCount: number }
   | { phase: 'error'; message: string; reloadWorkflow: boolean };
+
+/* ---- Revision state ---- */
+
+type RevisionState =
+  | { phase: 'idle' }
+  | { phase: 'confirming'; action: WorkflowActionWithEvidence; selectedEvidenceIds: string[] }
+  | { phase: 'submitting'; action: WorkflowActionWithEvidence; selectedEvidenceIds: string[] }
+  | { phase: 'success'; actionTitle: string; evidenceCount: number }
+  | { phase: 'error'; message: string; reloadWorkflow: boolean };
+
+const REVISE_ERROR_MESSAGES: Record<ReviseEvidenceDraftErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  EVIDENCE_NOT_FOUND: 'This evidence record could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to revise evidence for this action.',
+  ACTION_NOT_IN_REVISION: 'This action is not currently awaiting revision.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid revision state and could not be updated.',
+  EVIDENCE_NOT_REVISION_EDITABLE: 'This evidence record is not available for revision.',
+  EVIDENCE_NOT_REQUIRED: 'This action does not require evidence.',
+  EVIDENCE_REQUIREMENTS_MISSING: 'Evidence requirements have not been defined for this action.',
+  INVALID_EVIDENCE_TYPE: 'Select a valid evidence type.',
+  EVIDENCE_CONTENT_REQUIRED: 'Provide evidence content before saving.',
+  INVALID_EXTERNAL_URL: 'Enter a valid web address.',
+  UNSAFE_EXTERNAL_URL: 'This type of link is not permitted.',
+  UNEXPECTED_ERROR: 'We could not update this revision. Please try again.',
+};
+
+const RESUBMIT_ERROR_MESSAGES: Record<ResubmitRevisedEvidenceErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  EVIDENCE_NOT_FOUND: 'One or more selected evidence records could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to revise evidence for this action.',
+  ACTION_NOT_IN_REVISION: 'This action is not currently awaiting revision.',
+  ACTION_ALREADY_RESUBMITTED: 'This action has already been resubmitted for verification.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid revision state and could not be updated.',
+  EVIDENCE_NOT_REQUIRED: 'This action does not require evidence.',
+  EVIDENCE_REQUIREMENTS_MISSING: 'Evidence requirements have not been defined for this action.',
+  NO_EVIDENCE_SELECTED: 'Select at least one revised evidence record.',
+  REVISION_ITEMS_OUTSTANDING: 'Complete every requested revision before resubmitting this action.',
+  REQUIRED_REVISION_NOT_SELECTED: 'Select every revised evidence item that was returned for correction.',
+  EVIDENCE_ACTION_MISMATCH: 'One or more selected evidence records do not belong to this action.',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'One or more selected evidence records do not belong to this organization.',
+  EVIDENCE_NOT_SUBMITTABLE: 'One or more selected evidence records cannot be resubmitted.',
+  EVIDENCE_CONTENT_INVALID: 'One or more selected evidence records do not contain valid evidence content.',
+  UNEXPECTED_ERROR: 'We could not update this revision. Please try again.',
+};
 
 const SUBMIT_ERROR_MESSAGES: Record<SubmitActionEvidenceErrorCode, string> = {
   NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
@@ -460,7 +507,7 @@ export default function ActionCenterPage() {
 
   const canManageEvidenceForAction = useCallback((action: WorkflowActionWithEvidence): boolean => {
     if (!authContext) return false;
-    if (action.status !== 'Awaiting Evidence') return false;
+    if (action.status !== 'Awaiting Evidence' && action.status !== 'Revision Required') return false;
     return userCanStartAction(action, authContext);
   }, [authContext]);
 
@@ -550,6 +597,127 @@ export default function ActionCenterPage() {
     setDraftState({ phase: 'open', action, evidence: [], loadingEvidence: true, saving: false, feedback: null });
     await refreshEvidence(actionId);
   }, [workflow, refreshEvidence]);
+
+  /* ---- Revision handlers ---- */
+  const [revisionState, setRevisionState] = useState<RevisionState>({ phase: 'idle' });
+
+  const handleReviseEvidenceClick = useCallback(async (actionId: string) => {
+    if (workflow.status !== 'ready') return;
+    const action = workflow.data.actions.find((a) => a.id === actionId);
+    if (!action || action.status !== 'Revision Required') return;
+    setDraftState({ phase: 'open', action, evidence: [], loadingEvidence: true, saving: false, feedback: null });
+    await refreshEvidence(actionId);
+  }, [workflow, refreshEvidence]);
+
+  const handleReviseEvidence = useCallback(async (evidenceId: string, values: {
+    evidenceType: EvidenceType;
+    externalUrl: string | null;
+    writtenResponse: string | null;
+    submissionNotes: string | null;
+  }) => {
+    if (draftState.phase !== 'open') return;
+    const actionId = draftState.action.id;
+    setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: true, feedback: null } : prev);
+
+    const result = await reviseEvidenceDraft({
+      evidenceId,
+      evidenceType: values.evidenceType,
+      externalUrl: values.externalUrl,
+      writtenResponse: values.writtenResponse,
+      submissionNotes: values.submissionNotes,
+    });
+
+    if (result.ok) {
+      setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: false, feedback: 'Revision draft saved.' } : prev);
+      await refreshEvidence(actionId);
+      await loadWorkflow();
+      return;
+    }
+
+    const code = result.error.code;
+    if (code === 'ACTION_NOT_IN_REVISION' || code === 'ACTION_STATE_INCONSISTENT' || code === 'EVIDENCE_NOT_REVISION_EDITABLE') {
+      setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: false, feedback: REVISE_ERROR_MESSAGES[code] } : prev);
+      await refreshEvidence(actionId);
+      await loadWorkflow();
+      return;
+    }
+
+    setDraftState((prev) => prev.phase === 'open'
+      ? { ...prev, saving: false, feedback: REVISE_ERROR_MESSAGES[code] }
+      : prev);
+  }, [draftState, refreshEvidence, loadWorkflow]);
+
+  const handleAddSupplementalDraft = useCallback(async (values: {
+    evidenceType: EvidenceType;
+    externalUrl: string | null;
+    writtenResponse: string | null;
+    submissionNotes: string | null;
+  }) => {
+    if (draftState.phase !== 'open') return;
+    const actionId = draftState.action.id;
+    setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: true, feedback: null } : prev);
+
+    const result = await createRevisionEvidenceDraft({
+      actionId,
+      evidenceType: values.evidenceType,
+      externalUrl: values.externalUrl,
+      writtenResponse: values.writtenResponse,
+      submissionNotes: values.submissionNotes,
+    });
+
+    if (result.ok) {
+      setDraftState((prev) => prev.phase === 'open' ? { ...prev, saving: false, feedback: 'Supplemental evidence draft saved.' } : prev);
+      await refreshEvidence(actionId);
+      await loadWorkflow();
+      return;
+    }
+
+    const code = result.error.code;
+    setDraftState((prev) => prev.phase === 'open'
+      ? { ...prev, saving: false, feedback: REVISE_ERROR_MESSAGES[code] }
+      : prev);
+  }, [draftState, refreshEvidence, loadWorkflow]);
+
+  const handleResubmitEvidence = useCallback(async (actionId: string, selectedEvidenceIds: string[]) => {
+    if (workflow.status !== 'ready') return;
+    const action = workflow.data.actions.find((a) => a.id === actionId);
+    if (!action || action.status !== 'Revision Required') return;
+    if (revisionState.phase === 'submitting') return;
+    setRevisionState({ phase: 'confirming', action, selectedEvidenceIds });
+  }, [workflow, revisionState.phase]);
+
+  const handleResubmitConfirm = useCallback(async () => {
+    if (revisionState.phase !== 'confirming') return;
+    const { action, selectedEvidenceIds } = revisionState;
+    setRevisionState({ phase: 'submitting', action, selectedEvidenceIds });
+
+    const result = await resubmitRevisedEvidence({
+      actionId: action.id,
+      evidenceIds: selectedEvidenceIds,
+    });
+
+    if (result.ok) {
+      setRevisionState({ phase: 'success', actionTitle: action.title, evidenceCount: result.evidenceCount });
+      setDraftState({ phase: 'idle' });
+      await loadWorkflow();
+      return;
+    }
+
+    const code = result.error.code;
+    if (code === 'ACTION_ALREADY_RESUBMITTED' || code === 'REVISION_ITEMS_OUTSTANDING' || code === 'REQUIRED_REVISION_NOT_SELECTED' || code === 'EVIDENCE_NOT_SUBMITTABLE') {
+      setRevisionState({ phase: 'error', message: RESUBMIT_ERROR_MESSAGES[code], reloadWorkflow: true });
+      setDraftState({ phase: 'idle' });
+      await loadWorkflow();
+      return;
+    }
+
+    setRevisionState({ phase: 'error', message: RESUBMIT_ERROR_MESSAGES[code], reloadWorkflow: false });
+  }, [revisionState, loadWorkflow]);
+
+  const closeResubmitModal = useCallback(() => {
+    if (revisionState.phase === 'submitting') return;
+    setRevisionState({ phase: 'idle' });
+  }, [revisionState.phase]);
 
   const closeDraftWorkspace = useCallback(() => {
     setDraftState({ phase: 'idle' });
@@ -927,6 +1095,7 @@ export default function ActionCenterPage() {
               onViewEvidence={handleViewEvidenceClick}
               submittingEvidenceActionId={submittingEvidenceActionId}
               onSubmitEvidence={handleSubmitEvidenceClick}
+              onReviseEvidence={handleReviseEvidenceClick}
             />
           </div>
           <div className="order-1 lg:order-2">
@@ -972,6 +1141,10 @@ export default function ActionCenterPage() {
         onAddDraft={handleAddDraft}
         onUpdateDraft={handleUpdateDraft}
         onRequestSubmit={handleRequestSubmit}
+        onReviseEvidence={handleReviseEvidence}
+        onAddSupplementalDraft={handleAddSupplementalDraft}
+        onResubmitEvidence={handleResubmitEvidence}
+        resubmitting={revisionState.phase === 'submitting'}
       />
 
       {/* Submit Evidence confirmation modal */}
@@ -990,6 +1163,38 @@ export default function ActionCenterPage() {
         disabled={submitState.phase === 'submitting'}
         onCancel={closeSubmitModal}
         onConfirm={handleSubmitConfirm}
+      />
+
+      {/* Resubmit Evidence confirmation modal */}
+      <ResubmitEvidenceModal
+        open={revisionState.phase === 'confirming' || revisionState.phase === 'submitting'}
+        actionTitle={revisionState.phase === 'confirming' || revisionState.phase === 'submitting' ? revisionState.action.title : ''}
+        actionPillar={revisionState.phase === 'confirming' || revisionState.phase === 'submitting' ? revisionState.action.pillar_name : ''}
+        revisedEvidenceCount={revisionState.phase === 'confirming' || revisionState.phase === 'submitting'
+          ? revisionState.selectedEvidenceIds.filter((id) => {
+              if (draftState.phase !== 'open') return false;
+              const ev = draftState.evidence.find((e) => e.id === id);
+              return ev?.organization_visible_notes !== null && ev?.organization_visible_notes !== undefined;
+            }).length
+          : 0}
+        supplementalEvidenceCount={revisionState.phase === 'confirming' || revisionState.phase === 'submitting'
+          ? revisionState.selectedEvidenceIds.filter((id) => {
+              if (draftState.phase !== 'open') return false;
+              const ev = draftState.evidence.find((e) => e.id === id);
+              return ev?.organization_visible_notes === null || ev?.organization_visible_notes === undefined;
+            }).length
+          : 0}
+        selectedEvidenceTypes={revisionState.phase === 'confirming' || revisionState.phase === 'submitting'
+          ? revisionState.selectedEvidenceIds
+              .map((id) => draftState.phase === 'open' ? draftState.evidence.find((e) => e.id === id) : undefined)
+              .filter((e): e is OrganizationEvidenceRecord => e !== undefined)
+              .map((e) => e.evidence_type)
+          : []}
+        certificationRequired={(revisionState.phase === 'confirming' || revisionState.phase === 'submitting') ? revisionState.action.certification_requirement === true : false}
+        evidenceRequirements={(revisionState.phase === 'confirming' || revisionState.phase === 'submitting') ? revisionState.action.evidence_requirements ?? null : null}
+        disabled={revisionState.phase === 'submitting'}
+        onCancel={closeResubmitModal}
+        onConfirm={handleResubmitConfirm}
       />
     </div>
   );

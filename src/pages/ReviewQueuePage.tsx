@@ -521,6 +521,7 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
           const isMine = item.review_claimed_by === currentUserId;
           const isOther = item.review_claimed_by !== null && item.review_claimed_by !== currentUserId;
           const isRevision = item.status === 'Revision Required';
+          const isResubmitted = item.status === 'Submitted for Verification' && item.review_claimed_by === currentUserId && item.submitted_evidence_count > 0;
           return (
             <div
               key={item.id}
@@ -549,7 +550,7 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
                   </div>
                 </div>
                 <div className="flex flex-col gap-2 flex-shrink-0">
-                  {isMine && !isRevision && (
+                  {isMine && !isRevision && !isResubmitted && (
                     <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(52,180,120,0.12)', color: '#34B478' }}>
                       Review In Progress
                     </span>
@@ -557,6 +558,11 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
                   {isMine && isRevision && (
                     <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(212,168,67,0.12)', color: '#D4A843' }}>
                       Waiting for Organization Revision
+                    </span>
+                  )}
+                  {isMine && isResubmitted && (
+                    <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(28,116,134,0.12)', color: '#2592A8' }}>
+                      Revised Evidence Submitted
                     </span>
                   )}
                   {isOther && (

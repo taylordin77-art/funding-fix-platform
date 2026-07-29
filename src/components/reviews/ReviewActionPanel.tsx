@@ -35,9 +35,10 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
   const reqsText = action.evidence_requirements?.trim() || '';
   const isClaimOwner = action.review_claimed_by === currentUserId;
   const isRevisionRequired = action.status === 'Revision Required';
+  const isResubmitted = action.status === 'Submitted for Verification' && isClaimOwner;
 
   const underReviewEvidence = action.evidence.filter((e) => e.verification_status === 'Under Review');
-  const hasSelectableEvidence = underReviewEvidence.length > 0 && isClaimOwner && !isRevisionRequired;
+  const hasSelectableEvidence = underReviewEvidence.length > 0 && isClaimOwner && !isRevisionRequired && !isResubmitted;
 
   const toggleSelect = (id: string) => {
     if (processing) return;
@@ -86,6 +87,11 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
             {isRevisionRequired && (
               <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(212,168,67,0.12)', color: '#D4A843' }}>
                 Waiting for Organization Revision
+              </span>
+            )}
+            {isResubmitted && (
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(28,116,134,0.12)', color: '#2592A8' }}>
+                Revised Evidence Submitted
               </span>
             )}
           </div>
@@ -250,6 +256,9 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
       {/* Read-only indicator */}
       <div className="flex items-center gap-2 mt-5 text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>
         <Eye size={12} /> Read-only review view
+        {isResubmitted && (
+          <span className="ml-2" style={{ color: 'rgba(28,116,134,0.6)' }}>Ready to Resume Review</span>
+        )}
       </div>
     </div>
   );

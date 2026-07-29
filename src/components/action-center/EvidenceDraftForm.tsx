@@ -8,6 +8,10 @@ interface EvidenceDraftFormProps {
   open: boolean;
   /** When editing an existing draft, pass its initial values. */
   initialEvidence?: OrganizationEvidenceRecord | null;
+  /** 'create' = new draft, 'edit' = update existing draft, 'revise' = revise returned evidence, 'supplement' = supplemental revision draft */
+  mode?: 'create' | 'edit' | 'revise' | 'supplement';
+  /** Organization-visible reviewer instructions shown in revision/supplement mode */
+  reviewerInstructions?: string | null;
   disabled?: boolean;
   onCancel: () => void;
   onSave: (values: {
@@ -19,7 +23,7 @@ interface EvidenceDraftFormProps {
 }
 
 export function EvidenceDraftForm({
-  open, initialEvidence, disabled, onCancel, onSave,
+  open, initialEvidence, mode = 'create', reviewerInstructions, disabled, onCancel, onSave,
 }: EvidenceDraftFormProps) {
   const [evidenceType, setEvidenceType] = useState<EvidenceType>('document');
   const [externalUrl, setExternalUrl] = useState('');
@@ -66,6 +70,8 @@ export function EvidenceDraftForm({
   if (!open) return null;
 
   const isEditMode = !!initialEvidence;
+  const isRevisionMode = mode === 'revise' || mode === 'supplement';
+  const showInstructions = isRevisionMode && reviewerInstructions;
   const requiresUrl = evidenceType === 'website_link';
   const requiresWritten = evidenceType === 'written_response';
   const showUrlField = requiresUrl || evidenceType !== 'written_response';
@@ -100,8 +106,23 @@ export function EvidenceDraftForm({
       className="rounded-xl p-5"
       style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}
       role="form"
-      aria-label={isEditMode ? 'Edit evidence draft' : 'Add evidence draft'}
+      aria-label={isRevisionMode ? 'Revise evidence draft' : isEditMode ? 'Edit evidence draft' : 'Add evidence draft'}
     >
+      {/* Reviewer Instructions (revision/supplement mode only) */}
+      {showInstructions && (
+        <div
+          className="rounded-xl px-4 py-3 mb-4"
+          style={{ background: 'rgba(212,168,67,0.06)', border: '1px solid rgba(212,168,67,0.2)' }}
+        >
+          <p className="text-xs font-bold uppercase tracking-wider mb-1.5" style={{ color: '#D4A843' }}>
+            Reviewer Instructions
+          </p>
+          <p className="text-sm leading-relaxed whitespace-pre-line" style={{ color: 'rgba(255,255,255,0.7)' }}>
+            {reviewerInstructions}
+          </p>
+        </div>
+      )}
+
       {/* Evidence Type */}
       <div className="mb-4">
         <label htmlFor="evidence-type" className="block text-xs font-bold uppercase tracking-wider mb-2" style={{ color: 'rgba(255,255,255,0.6)' }}>
@@ -222,7 +243,9 @@ export function EvidenceDraftForm({
           aria-label={isEditMode ? 'Update the evidence draft' : 'Save the evidence draft'}
         >
           {disabled ? (
-            <><Loader2 size={14} className="animate-spin" /> Saving Draft…</>
+            <><Loader2 size={14} className="animate-spin" /> {isRevisionMode ? 'Saving Revision…' : 'Saving Draft…'}</>
+          ) : isRevisionMode ? (
+            <><FileText size={14} /> Save Revision Draft</>
           ) : isEditMode ? (
             <><FileText size={14} /> Update Draft</>
           ) : (

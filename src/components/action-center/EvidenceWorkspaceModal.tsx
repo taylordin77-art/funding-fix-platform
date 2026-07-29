@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, Plus, Pencil, FileCheck2, ShieldCheck, Clock, Inbox, Send, AlertCircle } from 'lucide-react';
+import { X, Plus, Pencil, FileCheck2, ShieldCheck, Clock, Inbox, Send, AlertCircle, MessageSquare, RotateCcw, CheckCircle2 } from 'lucide-react';
 import type { WorkflowActionWithEvidence } from '../../lib/actionWorkflowService';
 import { EVIDENCE_TYPE_LABELS, type OrganizationEvidenceRecord } from '../../lib/actionEvidenceService';
-import { MessageSquare } from 'lucide-react';
 import { EvidenceDraftForm } from './EvidenceDraftForm';
 import type { EvidenceType } from '../../lib/actionWorkflowService';
 
@@ -28,6 +27,23 @@ interface EvidenceWorkspaceModalProps {
     submissionNotes: string | null;
   }) => void;
   onRequestSubmit: (actionId: string, selectedEvidenceIds: string[]) => void;
+  /** Revise a returned evidence record (Additional Information Required -> Draft) */
+  onReviseEvidence?: (evidenceId: string, values: {
+    evidenceType: EvidenceType;
+    externalUrl: string | null;
+    writtenResponse: string | null;
+    submissionNotes: string | null;
+  }) => void;
+  /** Create a supplemental Draft during Revision Required */
+  onAddSupplementalDraft?: (values: {
+    evidenceType: EvidenceType;
+    externalUrl: string | null;
+    writtenResponse: string | null;
+    submissionNotes: string | null;
+  }) => void;
+  /** Resubmit revised evidence (Draft -> Submitted, action -> Submitted for Verification) */
+  onResubmitEvidence?: (actionId: string, selectedEvidenceIds: string[]) => void;
+  resubmitting?: boolean;
 }
 
 function formatDate(iso: string | null): string {
@@ -47,12 +63,16 @@ const STATUS_BADGE: Record<string, { bg: string; color: string }> = {
   Expired: { bg: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' },
 };
 
+type FormMode = 'create' | 'edit' | 'revise' | 'supplement';
+
 export function EvidenceWorkspaceModal({
   open, action, evidence, loadingEvidence, saving, submitting, canManageEvidence,
   onClose, onAddDraft, onUpdateDraft, onRequestSubmit,
+  onReviseEvidence, onAddSupplementalDraft, onResubmitEvidence, resubmitting,
 }: EvidenceWorkspaceModalProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [showForm, setShowForm] = useState(false);
+  const [formMode, setFormMode] = useState<FormMode>('create');
   const [editingDraft, setEditingDraft] = useState<OrganizationEvidenceRecord | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
@@ -61,32 +81,23 @@ export function EvidenceWorkspaceModal({
     const prev = document.activeElement as HTMLElement | null;
     const t = window.setTimeout(() => closeRef.current?.focus(), 30);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !saving && !submitting) { e.preventDefault(); handleClose(); }
+      if (e.key === 'Escape' && !saving && !submitting && !resubmitting) { e.preventDefault(); handleClose(); }
     };
     document.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
     return () => { window.clearTimeout(t); document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; prev?.focus?.(); };
-  }, [open, saving, submitting]);
+  }, [open, saving, submitting, resubmitting]);
 
   useEffect(() => {
-    if (!open) { setShowForm(false); setEditingDraft(null); setSelectedIds(new Set()); }
+    if (!open) { setShowForm(false); setFormMode('create'); setEditingDraft(null); setSelectedIds(new Set()); }
   }, [open]);
-
-  // Auto-select single draft (low-risk default for exactly one draft)
-  useEffect(() => {
-    if (!open || !action) return;
-    const drafts = evidence.filter((e) => e.verification_status === 'Draft');
-    if (drafts.length === 1 && selectedIds.size === 0) {
-      setSelectedIds(new Set([drafts[0].id]));
-    }
-  }, [open, evidence, action, selectedIds.size]);
 
   if (!open || !action) return null;
 
   const isAwaitingEvidence = action.status === 'Awaiting Evidence';
   const isSubmitted = action.status === 'Submitted for Verification';
   const isRevisionRequired = action.status === 'Revision Required';
-  const busy = saving || submitting;
+  const busy = saving || submitting || resubmitting;
 
   const handleClose = () => {
     if (busy) return;
@@ -97,11 +108,19 @@ export function EvidenceWorkspaceModal({
 
   const handleAddClick = () => {
     setEditingDraft(null);
+    setFormMode(isRevisionRequired ? 'supplement' : 'create');
     setShowForm(true);
   };
 
   const handleEditClick = (ev: OrganizationEvidenceRecord) => {
     setEditingDraft(ev);
+    setFormMode('edit');
+    setShowForm(true);
+  };
+
+  const handleReviseClick = (ev: OrganizationEvidenceRecord) => {
+    setEditingDraft(ev);
+    setFormMode('revise');
     setShowForm(true);
   };
 
@@ -116,7 +135,11 @@ export function EvidenceWorkspaceModal({
     writtenResponse: string | null;
     submissionNotes: string | null;
   }) => {
-    if (editingDraft) {
+    if (formMode === 'revise' && editingDraft && onReviseEvidence) {
+      onReviseEvidence(editingDraft.id, values);
+    } else if (formMode === 'supplement' && onAddSupplementalDraft) {
+      onAddSupplementalDraft(values);
+    } else if (editingDraft) {
       onUpdateDraft(editingDraft.id, values);
     } else {
       onAddDraft(values);
@@ -143,14 +166,32 @@ export function EvidenceWorkspaceModal({
 
   const handleSubmitClick = () => {
     if (busy || selectedIds.size === 0) return;
-    onRequestSubmit(action.id, [...selectedIds]);
+    if (isRevisionRequired && onResubmitEvidence) {
+      onResubmitEvidence(action.id, [...selectedIds]);
+    } else {
+      onRequestSubmit(action.id, [...selectedIds]);
+    }
   };
 
   const reqsText = action.evidence_requirements?.trim() || '';
   const draftEvidence = evidence.filter((e) => e.verification_status === 'Draft');
+  const returnedEvidence = evidence.filter((e) => e.verification_status === 'Additional Information Required');
   const submittedCount = evidence.filter((e) => e.verification_status === 'Submitted' || e.verification_status === 'Under Review').length;
   const approvedCount = evidence.filter((e) => e.verification_status === 'Approved').length;
   const selectedCount = selectedIds.size;
+
+  // Revision readiness
+  const returnedTotal = returnedEvidence.length;
+  const returnedRevisedToDraft = evidence.filter((e) => e.organization_visible_notes !== null && e.verification_status === 'Draft').length;
+  const returnedStillOutstanding = returnedEvidence.length;
+  const supplementalDrafts = evidence.filter((e) => e.organization_visible_notes === null && e.verification_status === 'Draft');
+  const allReturnedRevised = returnedStillOutstanding === 0;
+  const allReturnedDraftsSelected = returnedEvidence.length === 0 && evidence.filter((e) => e.organization_visible_notes !== null && e.verification_status === 'Draft').every((e) => selectedIds.has(e.id));
+  const canResubmit = isRevisionRequired && allReturnedRevised && allReturnedDraftsSelected && selectedCount > 0 && !busy;
+
+  const formReviewerInstructions = formMode === 'revise' && editingDraft?.organization_visible_notes
+    ? editingDraft.organization_visible_notes
+    : null;
 
   return (
     <div
@@ -227,13 +268,16 @@ export function EvidenceWorkspaceModal({
           {submittedCount > 0 && <span>{submittedCount} Submitted</span>}
           {approvedCount > 0 && <span style={{ color: '#34B478' }}>{approvedCount} Approved</span>}
           {isSubmitted && <span style={{ color: '#2592A8' }}>Action Submitted for Verification</span>}
+          {isRevisionRequired && <span style={{ color: '#D4A843' }}>{returnedStillOutstanding} awaiting revision</span>}
         </div>
 
-        {/* Evidence form (add/edit) */}
-        {showForm && canManageEvidence && isAwaitingEvidence && (
+        {/* Evidence form (add/edit/revise/supplement) */}
+        {showForm && canManageEvidence && (
           <EvidenceDraftForm
             open={showForm}
+            mode={formMode}
             initialEvidence={editingDraft}
+            reviewerInstructions={formReviewerInstructions}
             disabled={saving}
             onCancel={handleFormCancel}
             onSave={handleFormSave}
@@ -241,7 +285,7 @@ export function EvidenceWorkspaceModal({
         )}
 
         {/* Revision Required banner */}
-        {isRevisionRequired && (
+        {isRevisionRequired && !showForm && (
           <div
             className="rounded-xl px-4 py-4 mb-5"
             style={{ background: 'rgba(212,168,67,0.06)', border: '1px solid rgba(212,168,67,0.25)' }}
@@ -251,17 +295,9 @@ export function EvidenceWorkspaceModal({
               <div>
                 <h3 className="text-sm font-bold mb-1" style={{ color: '#D4A843' }}>Additional Information Required</h3>
                 <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                  The C-SHIFT reviewer has requested additional information or corrections for some of your evidence. Please review the revision instructions below.
+                  The C-SHIFT reviewer has requested additional information or corrections for some of your evidence. Please review the revision instructions, edit the returned evidence, and resubmit when ready.
                 </p>
               </div>
-            </div>
-            <div
-              className="rounded-lg px-3 py-2"
-              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
-            >
-              <p className="text-xs" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                Evidence revision and resubmission will be available in the next workflow step.
-              </p>
             </div>
           </div>
         )}
@@ -298,7 +334,11 @@ export function EvidenceWorkspaceModal({
                   const isDraft = ev.verification_status === 'Draft';
                   const isRevision = ev.verification_status === 'Additional Information Required';
                   const isSelected = selectedIds.has(ev.id);
-                  const canSelect = isDraft && isAwaitingEvidence && canManageEvidence && !busy;
+                  const canSelectForSubmit = isDraft && isAwaitingEvidence && canManageEvidence && !busy;
+                  const canSelectForResubmit = isDraft && isRevisionRequired && canManageEvidence && !busy;
+                  const canSelect = canSelectForSubmit || canSelectForResubmit;
+                  const canRevise = isRevision && canManageEvidence && isRevisionRequired && !busy;
+                  const canEditDraft = isDraft && canManageEvidence && isAwaitingEvidence && !busy;
                   return (
                     <div
                       key={ev.id}
@@ -318,7 +358,7 @@ export function EvidenceWorkspaceModal({
                               disabled={busy}
                               className="mt-1 flex-shrink-0"
                               style={{ accentColor: '#1C7486', width: 16, height: 16 }}
-                              aria-label={`Select ${EVIDENCE_TYPE_LABELS[ev.evidence_type] ?? ev.evidence_type} draft for submission`}
+                              aria-label={`Select ${EVIDENCE_TYPE_LABELS[ev.evidence_type] ?? ev.evidence_type} for ${isRevisionRequired ? 'resubmission' : 'submission'}`}
                             />
                           )}
                           <div className="flex-1 min-w-0">
@@ -358,6 +398,20 @@ export function EvidenceWorkspaceModal({
                                 </p>
                               </div>
                             )}
+                            {/* Show preserved instructions on revised Drafts too */}
+                            {isDraft && isRevisionRequired && ev.organization_visible_notes && (
+                              <div
+                                className="mt-2 rounded-lg px-3 py-2"
+                                style={{ background: 'rgba(212,168,67,0.04)', border: '1px solid rgba(212,168,67,0.1)' }}
+                              >
+                                <p className="text-xs font-bold uppercase tracking-wider mb-1" style={{ color: 'rgba(212,168,67,0.7)' }}>
+                                  <MessageSquare size={10} className="inline mr-1" /> Original Revision Instructions
+                                </p>
+                                <p className="text-xs leading-relaxed whitespace-pre-line" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                                  {ev.organization_visible_notes}
+                                </p>
+                              </div>
+                            )}
                             <div className="flex items-center gap-3 mt-2 text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>
                               <span className="flex items-center gap-1"><Clock size={10} /> {formatDate(ev.created_at)}</span>
                               <span>Updated {formatDate(ev.updated_at)}</span>
@@ -365,7 +419,8 @@ export function EvidenceWorkspaceModal({
                             </div>
                           </div>
                         </div>
-                        {isDraft && canManageEvidence && isAwaitingEvidence && (
+                        {/* Edit Draft (Awaiting Evidence) */}
+                        {canEditDraft && (
                           <button
                             type="button"
                             className="btn-ghost flex-shrink-0"
@@ -377,13 +432,27 @@ export function EvidenceWorkspaceModal({
                             <Pencil size={12} /> Edit
                           </button>
                         )}
+                        {/* Revise returned evidence (Revision Required) */}
+                        {canRevise && (
+                          <button
+                            type="button"
+                            className="btn-ghost flex-shrink-0"
+                            style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem', color: '#D4A843', borderColor: 'rgba(212,168,67,0.3)' }}
+                            onClick={() => handleReviseClick(ev)}
+                            disabled={busy}
+                            aria-label={`Revise ${EVIDENCE_TYPE_LABELS[ev.evidence_type] ?? ev.evidence_type} evidence`}
+                          >
+                            <RotateCcw size={12} /> Revise
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
                 })}
-                {canManageEvidence && isAwaitingEvidence && (
+                {/* Add Evidence / Add Supplemental */}
+                {canManageEvidence && (isAwaitingEvidence || isRevisionRequired) && (
                   <button type="button" className="btn-primary w-full" onClick={handleAddClick} disabled={busy}>
-                    <Plus size={14} /> Add Evidence
+                    <Plus size={14} /> {isRevisionRequired ? 'Add Supplemental Evidence' : 'Add Evidence'}
                   </button>
                 )}
               </div>
@@ -391,7 +460,53 @@ export function EvidenceWorkspaceModal({
           </>
         )}
 
-        {/* Submission readiness panel */}
+        {/* Revision readiness panel */}
+        {isRevisionRequired && !showForm && canManageEvidence && (
+          <div
+            className="rounded-xl px-4 py-3 mb-4"
+            style={{ background: allReturnedRevised ? 'rgba(52,180,120,0.04)' : 'rgba(212,168,67,0.06)', border: `1px solid ${allReturnedRevised ? 'rgba(52,180,120,0.15)' : 'rgba(212,168,67,0.2)'}` }}
+          >
+            <div className="flex items-start gap-3 mb-3">
+              {allReturnedRevised ? (
+                <CheckCircle2 size={16} style={{ color: '#34B478', marginTop: 1, flexShrink: 0 }} />
+              ) : (
+                <AlertCircle size={16} style={{ color: '#D4A843', marginTop: 1, flexShrink: 0 }} />
+              )}
+              <div className="flex-1">
+                <p className="text-xs leading-relaxed mb-2" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                  {allReturnedRevised
+                    ? 'All requested revisions have been addressed. Review the selected evidence before resubmitting.'
+                    : 'Complete every requested revision before resubmitting this action.'}
+                </p>
+                <div className="flex flex-wrap gap-4 text-xs" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                  <span>{returnedTotal} returned</span>
+                  <span>{returnedRevisedToDraft} revised to Draft</span>
+                  <span style={{ color: returnedStillOutstanding > 0 ? '#D4A843' : 'rgba(255,255,255,0.5)' }}>{returnedStillOutstanding} awaiting revision</span>
+                  {supplementalDrafts.length > 0 && <span>{supplementalDrafts.length} supplemental</span>}
+                  <span>{selectedCount} selected for resubmission</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ background: 'rgba(28,116,134,0.15)', borderColor: 'rgba(28,116,134,0.4)', color: '#2592A8' }}
+                onClick={handleSubmitClick}
+                disabled={!canResubmit}
+                aria-label="Resubmit revised evidence to reviewer"
+              >
+                {resubmitting ? (
+                  <><Clock size={14} className="animate-spin" /> Submitting…</>
+                ) : (
+                  <><Send size={14} /> Resubmit Evidence</>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Original submission readiness panel (Awaiting Evidence) */}
         {isAwaitingEvidence && draftEvidence.length > 0 && !showForm && canManageEvidence && (
           <div
             className="rounded-xl px-4 py-3 mb-4"
@@ -428,12 +543,17 @@ export function EvidenceWorkspaceModal({
         {/* Status feedback */}
         {saving && (
           <p className="text-xs text-center" style={{ color: 'rgba(255,255,255,0.5)' }} role="status" aria-live="polite">
-            Saving Draft…
+            {formMode === 'revise' ? 'Saving Revision…' : formMode === 'supplement' ? 'Saving Supplemental Draft…' : 'Saving Draft…'}
           </p>
         )}
         {submitting && (
           <p className="text-xs text-center" style={{ color: 'rgba(255,255,255,0.5)' }} role="status" aria-live="polite">
             Submitting evidence for verification…
+          </p>
+        )}
+        {resubmitting && (
+          <p className="text-xs text-center" style={{ color: 'rgba(255,255,255,0.5)' }} role="status" aria-live="polite">
+            Resubmitting revised evidence…
           </p>
         )}
       </div>

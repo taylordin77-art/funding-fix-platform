@@ -905,3 +905,339 @@ export async function requestAdditionalInformation(
     message: 'Additional information requested.',
   };
 }
+
+/* ============================================================
+   revise_action_evidence_draft: Additional Info Required -> Draft
+   ============================================================ */
+
+export type ReviseEvidenceDraftErrorCode =
+  | 'NOT_AUTHENTICATED'
+  | 'ACTION_NOT_FOUND'
+  | 'EVIDENCE_NOT_FOUND'
+  | 'NOT_AUTHORIZED'
+  | 'ACTION_NOT_IN_REVISION'
+  | 'ACTION_STATE_INCONSISTENT'
+  | 'EVIDENCE_NOT_REVISION_EDITABLE'
+  | 'EVIDENCE_NOT_REQUIRED'
+  | 'EVIDENCE_REQUIREMENTS_MISSING'
+  | 'INVALID_EVIDENCE_TYPE'
+  | 'EVIDENCE_CONTENT_REQUIRED'
+  | 'INVALID_EXTERNAL_URL'
+  | 'UNSAFE_EXTERNAL_URL'
+  | 'UNEXPECTED_ERROR';
+
+export type ReviseEvidenceDraftResult =
+  | { ok: true; evidence: EvidenceRecord; message: string }
+  | { ok: false; error: { code: ReviseEvidenceDraftErrorCode; message: string } };
+
+const REVISE_TOKEN_MAP: Record<string, ReviseEvidenceDraftErrorCode> = {
+  NOT_AUTHENTICATED: 'NOT_AUTHENTICATED',
+  ACTION_NOT_FOUND: 'ACTION_NOT_FOUND',
+  EVIDENCE_NOT_FOUND: 'EVIDENCE_NOT_FOUND',
+  NOT_AUTHORIZED: 'NOT_AUTHORIZED',
+  ACTION_NOT_IN_REVISION: 'ACTION_NOT_IN_REVISION',
+  ACTION_STATE_INCONSISTENT: 'ACTION_STATE_INCONSISTENT',
+  EVIDENCE_NOT_REVISION_EDITABLE: 'EVIDENCE_NOT_REVISION_EDITABLE',
+  EVIDENCE_NOT_REQUIRED: 'EVIDENCE_NOT_REQUIRED',
+  EVIDENCE_REQUIREMENTS_MISSING: 'EVIDENCE_REQUIREMENTS_MISSING',
+  INVALID_EVIDENCE_TYPE: 'INVALID_EVIDENCE_TYPE',
+  EVIDENCE_CONTENT_REQUIRED: 'EVIDENCE_CONTENT_REQUIRED',
+  INVALID_EXTERNAL_URL: 'INVALID_EXTERNAL_URL',
+  UNSAFE_EXTERNAL_URL: 'UNSAFE_EXTERNAL_URL',
+};
+
+const REVISE_SAFE_MESSAGES: Record<ReviseEvidenceDraftErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  EVIDENCE_NOT_FOUND: 'This evidence record could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to revise evidence for this action.',
+  ACTION_NOT_IN_REVISION: 'This action is not currently awaiting revision.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid revision state and could not be updated.',
+  EVIDENCE_NOT_REVISION_EDITABLE: 'This evidence record is not available for revision.',
+  EVIDENCE_NOT_REQUIRED: 'This action does not require evidence.',
+  EVIDENCE_REQUIREMENTS_MISSING: 'Evidence requirements have not been defined for this action.',
+  INVALID_EVIDENCE_TYPE: 'Select a valid evidence type.',
+  EVIDENCE_CONTENT_REQUIRED: 'Provide evidence content before saving.',
+  INVALID_EXTERNAL_URL: 'Enter a valid web address.',
+  UNSAFE_EXTERNAL_URL: 'This type of link is not permitted.',
+  UNEXPECTED_ERROR: 'We could not update this revision. Please try again.',
+};
+
+function mapReviseRpcError(message: string | undefined): ReviseEvidenceDraftErrorCode {
+  if (!message) return 'UNEXPECTED_ERROR';
+  const token = message.split(':')[0].trim();
+  return REVISE_TOKEN_MAP[token] ?? 'UNEXPECTED_ERROR';
+}
+
+export interface ReviseEvidenceDraftInput {
+  evidenceId: string;
+  evidenceType: EvidenceType;
+  externalUrl?: string | null;
+  writtenResponse?: string | null;
+  submissionNotes?: string | null;
+  fileUrl?: string | null;
+}
+
+export async function reviseEvidenceDraft(input: ReviseEvidenceDraftInput): Promise<ReviseEvidenceDraftResult> {
+  if (!input.evidenceId || input.evidenceId.trim() === '') {
+    return { ok: false, error: { code: 'EVIDENCE_NOT_FOUND', message: REVISE_SAFE_MESSAGES.EVIDENCE_NOT_FOUND } };
+  }
+  if (!VALID_EVIDENCE_TYPES.has(input.evidenceType)) {
+    return { ok: false, error: { code: 'INVALID_EVIDENCE_TYPE', message: REVISE_SAFE_MESSAGES.INVALID_EVIDENCE_TYPE } };
+  }
+
+  const { data, error } = (await supabase.rpc('revise_action_evidence_draft', {
+    p_evidence_id: input.evidenceId,
+    p_evidence_type: input.evidenceType,
+    p_external_url: normalizeOptional(input.externalUrl),
+    p_written_response: normalizeOptional(input.writtenResponse),
+    p_submission_notes: normalizeOptional(input.submissionNotes),
+    p_file_url: normalizeOptional(input.fileUrl),
+  })) as { data: unknown; error: { message?: string } | null };
+
+  if (error) {
+    console.error('[actionMutationService] revise_action_evidence_draft RPC error:', error.message);
+    const code = mapReviseRpcError(error.message);
+    return { ok: false, error: { code, message: REVISE_SAFE_MESSAGES[code] } };
+  }
+
+  if (!isEvidenceRow(data)) {
+    console.error('[actionMutationService] revise RPC returned unexpected row shape');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REVISE_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const row = data as EvidenceRecord;
+  if (row.verification_status !== 'Draft') {
+    console.error('[actionMutationService] revise RPC returned status', row.verification_status, 'expected Draft');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REVISE_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  return { ok: true, evidence: row, message: 'Revision draft saved.' };
+}
+
+/* ============================================================
+   create_revision_evidence_draft: supplemental Draft during Revision Required
+   ============================================================ */
+
+export type CreateRevisionEvidenceDraftErrorCode = ReviseEvidenceDraftErrorCode;
+
+export type CreateRevisionEvidenceDraftResult =
+  | { ok: true; evidence: EvidenceRecord; message: string }
+  | { ok: false; error: { code: CreateRevisionEvidenceDraftErrorCode; message: string } };
+
+export interface CreateRevisionEvidenceDraftInput {
+  actionId: string;
+  evidenceType: EvidenceType;
+  externalUrl?: string | null;
+  writtenResponse?: string | null;
+  submissionNotes?: string | null;
+  fileUrl?: string | null;
+}
+
+export async function createRevisionEvidenceDraft(input: CreateRevisionEvidenceDraftInput): Promise<CreateRevisionEvidenceDraftResult> {
+  if (!input.actionId || input.actionId.trim() === '') {
+    return { ok: false, error: { code: 'ACTION_NOT_FOUND', message: REVISE_SAFE_MESSAGES.ACTION_NOT_FOUND } };
+  }
+  if (!VALID_EVIDENCE_TYPES.has(input.evidenceType)) {
+    return { ok: false, error: { code: 'INVALID_EVIDENCE_TYPE', message: REVISE_SAFE_MESSAGES.INVALID_EVIDENCE_TYPE } };
+  }
+
+  const { data, error } = (await supabase.rpc('create_revision_evidence_draft', {
+    p_action_id: input.actionId,
+    p_evidence_type: input.evidenceType,
+    p_external_url: normalizeOptional(input.externalUrl),
+    p_written_response: normalizeOptional(input.writtenResponse),
+    p_submission_notes: normalizeOptional(input.submissionNotes),
+    p_file_url: normalizeOptional(input.fileUrl),
+  })) as { data: unknown; error: { message?: string } | null };
+
+  if (error) {
+    console.error('[actionMutationService] create_revision_evidence_draft RPC error:', error.message);
+    const code = mapReviseRpcError(error.message);
+    return { ok: false, error: { code, message: REVISE_SAFE_MESSAGES[code] } };
+  }
+
+  if (!isEvidenceRow(data)) {
+    console.error('[actionMutationService] create revision RPC returned unexpected row shape');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REVISE_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const row = data as EvidenceRecord;
+  if (row.verification_status !== 'Draft') {
+    console.error('[actionMutationService] create revision RPC returned status', row.verification_status, 'expected Draft');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: REVISE_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  return { ok: true, evidence: row, message: 'Supplemental evidence draft saved.' };
+}
+
+/* ============================================================
+   resubmit_revised_action_evidence: Draft -> Submitted + Action -> Submitted for Verification
+   ============================================================ */
+
+export type ResubmitRevisedEvidenceErrorCode =
+  | 'NOT_AUTHENTICATED'
+  | 'ACTION_NOT_FOUND'
+  | 'EVIDENCE_NOT_FOUND'
+  | 'NOT_AUTHORIZED'
+  | 'ACTION_NOT_IN_REVISION'
+  | 'ACTION_ALREADY_RESUBMITTED'
+  | 'ACTION_STATE_INCONSISTENT'
+  | 'EVIDENCE_NOT_REQUIRED'
+  | 'EVIDENCE_REQUIREMENTS_MISSING'
+  | 'NO_EVIDENCE_SELECTED'
+  | 'REVISION_ITEMS_OUTSTANDING'
+  | 'REQUIRED_REVISION_NOT_SELECTED'
+  | 'EVIDENCE_ACTION_MISMATCH'
+  | 'EVIDENCE_ORGANIZATION_MISMATCH'
+  | 'EVIDENCE_NOT_SUBMITTABLE'
+  | 'EVIDENCE_CONTENT_INVALID'
+  | 'UNEXPECTED_ERROR';
+
+export type ResubmitRevisedEvidenceResult =
+  | {
+      ok: true;
+      action: PersistedOrganizationAction;
+      evidence: EvidenceRecord[];
+      evidenceCount: number;
+      reviewerId: string;
+      resubmittedAt: string;
+      message: string;
+    }
+  | {
+      ok: false;
+      error: { code: ResubmitRevisedEvidenceErrorCode; message: string };
+    };
+
+const RESUBMIT_TOKEN_MAP: Record<string, ResubmitRevisedEvidenceErrorCode> = {
+  NOT_AUTHENTICATED: 'NOT_AUTHENTICATED',
+  ACTION_NOT_FOUND: 'ACTION_NOT_FOUND',
+  EVIDENCE_NOT_FOUND: 'EVIDENCE_NOT_FOUND',
+  NOT_AUTHORIZED: 'NOT_AUTHORIZED',
+  ACTION_NOT_IN_REVISION: 'ACTION_NOT_IN_REVISION',
+  ACTION_ALREADY_RESUBMITTED: 'ACTION_ALREADY_RESUBMITTED',
+  ACTION_STATE_INCONSISTENT: 'ACTION_STATE_INCONSISTENT',
+  EVIDENCE_NOT_REQUIRED: 'EVIDENCE_NOT_REQUIRED',
+  EVIDENCE_REQUIREMENTS_MISSING: 'EVIDENCE_REQUIREMENTS_MISSING',
+  NO_EVIDENCE_SELECTED: 'NO_EVIDENCE_SELECTED',
+  REVISION_ITEMS_OUTSTANDING: 'REVISION_ITEMS_OUTSTANDING',
+  REQUIRED_REVISION_NOT_SELECTED: 'REQUIRED_REVISION_NOT_SELECTED',
+  EVIDENCE_ACTION_MISMATCH: 'EVIDENCE_ACTION_MISMATCH',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'EVIDENCE_ORGANIZATION_MISMATCH',
+  EVIDENCE_NOT_SUBMITTABLE: 'EVIDENCE_NOT_SUBMITTABLE',
+  EVIDENCE_CONTENT_INVALID: 'EVIDENCE_CONTENT_INVALID',
+};
+
+const RESUBMIT_SAFE_MESSAGES: Record<ResubmitRevisedEvidenceErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  EVIDENCE_NOT_FOUND: 'One or more selected evidence records could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to revise evidence for this action.',
+  ACTION_NOT_IN_REVISION: 'This action is not currently awaiting revision.',
+  ACTION_ALREADY_RESUBMITTED: 'This action has already been resubmitted for verification.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid revision state and could not be updated.',
+  EVIDENCE_NOT_REQUIRED: 'This action does not require evidence.',
+  EVIDENCE_REQUIREMENTS_MISSING: 'Evidence requirements have not been defined for this action.',
+  NO_EVIDENCE_SELECTED: 'Select at least one revised evidence record.',
+  REVISION_ITEMS_OUTSTANDING: 'Complete every requested revision before resubmitting this action.',
+  REQUIRED_REVISION_NOT_SELECTED: 'Select every revised evidence item that was returned for correction.',
+  EVIDENCE_ACTION_MISMATCH: 'One or more selected evidence records do not belong to this action.',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'One or more selected evidence records do not belong to this organization.',
+  EVIDENCE_NOT_SUBMITTABLE: 'One or more selected evidence records cannot be resubmitted.',
+  EVIDENCE_CONTENT_INVALID: 'One or more selected evidence records do not contain valid evidence content.',
+  UNEXPECTED_ERROR: 'We could not update this revision. Please try again.',
+};
+
+function mapResubmitRpcError(message: string | undefined): ResubmitRevisedEvidenceErrorCode {
+  if (!message) return 'UNEXPECTED_ERROR';
+  const token = message.split(':')[0].trim();
+  return RESUBMIT_TOKEN_MAP[token] ?? 'UNEXPECTED_ERROR';
+}
+
+export interface ResubmitRevisedEvidenceInput {
+  actionId: string;
+  evidenceIds: string[];
+}
+
+export async function resubmitRevisedEvidence(input: ResubmitRevisedEvidenceInput): Promise<ResubmitRevisedEvidenceResult> {
+  if (!input.actionId || input.actionId.trim() === '') {
+    return { ok: false, error: { code: 'ACTION_NOT_FOUND', message: RESUBMIT_SAFE_MESSAGES.ACTION_NOT_FOUND } };
+  }
+
+  const uniqueIds = [...new Set(input.evidenceIds.filter((id) => id && id.trim() !== ''))];
+  if (uniqueIds.length === 0) {
+    return { ok: false, error: { code: 'NO_EVIDENCE_SELECTED', message: RESUBMIT_SAFE_MESSAGES.NO_EVIDENCE_SELECTED } };
+  }
+
+  const { data, error } = (await supabase.rpc('resubmit_revised_action_evidence', {
+    p_action_id: input.actionId,
+    p_evidence_ids: uniqueIds,
+  })) as { data: unknown; error: { message?: string } | null };
+
+  if (error) {
+    console.error('[actionMutationService] resubmit_revised_action_evidence RPC error:', error.message);
+    const code = mapResubmitRpcError(error.message);
+    return { ok: false, error: { code, message: RESUBMIT_SAFE_MESSAGES[code] } };
+  }
+
+  if (!data || typeof data !== 'object') {
+    console.error('[actionMutationService] resubmit RPC returned unexpected shape');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUBMIT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const result = data as Record<string, unknown>;
+  const actionRow = result.action;
+  const evidenceArray = result.evidence;
+  const evidenceCount = result.evidence_count;
+  const reviewerId = result.reviewer_id;
+  const resubmittedAt = result.resubmitted_at;
+
+  if (!isActionRow(actionRow)) {
+    console.error('[actionMutationService] resubmit RPC returned invalid action row');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUBMIT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const action = actionRow as PersistedOrganizationAction;
+  if (action.status !== 'Submitted for Verification') {
+    console.error('[actionMutationService] resubmit RPC returned action status', action.status, 'expected Submitted for Verification');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUBMIT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (!Array.isArray(evidenceArray)) {
+    console.error('[actionMutationService] resubmit RPC returned non-array evidence');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUBMIT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const evidence = (evidenceArray as unknown[]).filter(isEvidenceRow) as EvidenceRecord[];
+  for (const ev of evidence) {
+    if (ev.verification_status !== 'Submitted') {
+      console.error('[actionMutationService] resubmit RPC returned evidence with status', ev.verification_status, 'expected Submitted');
+      return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUBMIT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+    }
+  }
+
+  if (typeof evidenceCount !== 'number' || evidenceCount !== evidence.length) {
+    console.error('[actionMutationService] resubmit RPC returned invalid evidence_count');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUBMIT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (typeof reviewerId !== 'string') {
+    console.error('[actionMutationService] resubmit RPC returned invalid reviewer_id');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUBMIT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (typeof resubmittedAt !== 'string') {
+    console.error('[actionMutationService] resubmit RPC returned invalid resubmitted_at');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUBMIT_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  return {
+    ok: true,
+    action,
+    evidence,
+    evidenceCount: evidenceCount,
+    reviewerId,
+    resubmittedAt,
+    message: 'Revised evidence submitted.',
+  };
+}

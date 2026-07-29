@@ -1,6 +1,6 @@
 import {
   FileCheck2, Upload, ArrowRight, ShieldCheck, Loader2, ClipboardList, Plus, Send,
-  Clock, TrendingUp, Calendar, User, BadgeCheck,
+  Clock, TrendingUp, Calendar, User, BadgeCheck, AlertCircle, RotateCcw,
 } from 'lucide-react';
 import type { WorkflowActionWithEvidence } from '../../lib/actionWorkflowService';
 
@@ -30,6 +30,8 @@ interface ActionCardProps {
   isSubmittingEvidence?: boolean;
   /** Called when the user clicks Submit Evidence (opens the evidence workspace for selection). */
   onSubmitEvidence?: (actionId: string) => void;
+  /** Called when the user clicks Revise Evidence (opens the evidence workspace in revision mode). */
+  onReviseEvidence?: (actionId: string) => void;
 }
 
 const PRIORITY_STYLES: Record<string, { bg: string; border: string; color: string }> = {
@@ -71,7 +73,7 @@ export function ActionCard({
   action, canStart = false, isStarting = false, onStart,
   canRequestEvidence = false, isRequestingEvidence = false, onRequestEvidence,
   canManageEvidence = false, isLoadingEvidence = false, onAddEvidence, onViewEvidence,
-  isSubmittingEvidence = false, onSubmitEvidence,
+  isSubmittingEvidence = false, onSubmitEvidence, onReviseEvidence,
 }: ActionCardProps) {
   const pr = PRIORITY_STYLES[action.priority] ?? PRIORITY_STYLES.Low;
   const st = STATUS_STYLES[action.status] ?? STATUS_STYLES['Not Started'];
@@ -305,6 +307,37 @@ export function ActionCard({
           >
             <Clock size={12} /> Review In Progress
           </span>
+        )}
+        {action.status === 'Revision Required' && (
+          <>
+            <span
+              className="text-xs font-bold px-3 py-1.5 rounded-full inline-flex items-center gap-1"
+              style={{ background: 'rgba(212,168,67,0.12)', color: '#D4A843' }}
+            >
+              <AlertCircle size={12} /> Additional Information Required
+            </span>
+            {canManageEvidence && (
+              <button
+                type="button"
+                className="btn-primary"
+                style={{
+                  padding: '0.5rem 1.25rem', fontSize: '0.8125rem',
+                  background: 'rgba(212,168,67,0.15)',
+                  borderColor: 'rgba(212,168,67,0.4)',
+                  color: '#D4A843',
+                }}
+                onClick={() => onReviseEvidence?.(action.id)}
+                disabled={isLoadingEvidence}
+                aria-label="Revise evidence for this action"
+              >
+                {isLoadingEvidence ? (
+                  <><Loader2 size={14} className="animate-spin" /> Loading…</>
+                ) : (
+                  <><RotateCcw size={14} /> Revise Evidence</>
+                )}
+              </button>
+            )}
+          </>
         )}
         {action.evidence_required === true && action.evidenceSummary.evidenceVerified === 0 && action.status !== 'Submitted for Verification' && (
           <button
