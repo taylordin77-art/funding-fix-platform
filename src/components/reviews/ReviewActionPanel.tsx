@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ShieldCheck, Clock, FileText, Link as LinkIcon, StickyNote, Eye, MessageSquare, Lock } from 'lucide-react';
+import { ShieldCheck, Clock, FileText, Link as LinkIcon, StickyNote, Eye, MessageSquare, Lock, Play } from 'lucide-react';
 import type { ReviewActionDetail } from '../../lib/reviewQueueService';
 import { EVIDENCE_TYPE_LABELS } from '../../lib/actionEvidenceService';
 import { RequestInformationForm, type RequestInformationFormValues } from './RequestInformationForm';
@@ -8,7 +8,9 @@ interface ReviewActionPanelProps {
   action: ReviewActionDetail;
   currentUserId: string | null;
   onRequestInformation?: (actionId: string, evidenceIds: string[], orgNotes: string, reviewerNotes: string) => void;
+  onResumeReview?: (actionId: string, evidenceIds: string[]) => void;
   processing?: boolean;
+  resuming?: boolean;
 }
 
 function formatDate(iso: string | null): string {
@@ -28,7 +30,7 @@ const STATUS_BADGE: Record<string, { bg: string; color: string }> = {
   Expired: { bg: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' },
 };
 
-export function ReviewActionPanel({ action, currentUserId, onRequestInformation, processing }: ReviewActionPanelProps) {
+export function ReviewActionPanel({ action, currentUserId, onRequestInformation, onResumeReview, processing, resuming }: ReviewActionPanelProps) {
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<Set<string>>(new Set());
   const [showRequestForm, setShowRequestForm] = useState(false);
 
@@ -36,12 +38,19 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
   const isClaimOwner = action.review_claimed_by === currentUserId;
   const isRevisionRequired = action.status === 'Revision Required';
   const isResubmitted = action.status === 'Submitted for Verification' && isClaimOwner;
+  const busy = processing || resuming;
 
   const underReviewEvidence = action.evidence.filter((e) => e.verification_status === 'Under Review');
-  const hasSelectableEvidence = underReviewEvidence.length > 0 && isClaimOwner && !isRevisionRequired && !isResubmitted;
+  const submittedEvidence = action.evidence.filter((e) => e.verification_status === 'Submitted');
+
+  // Request Additional Information: select Under Review evidence
+  const hasSelectableForRequest = underReviewEvidence.length > 0 && isClaimOwner && !isRevisionRequired && !busy;
+
+  // Resume Review: select Submitted evidence (only when action is resubmitted and claimed by me)
+  const hasSelectableForResume = submittedEvidence.length > 0 && isClaimOwner && isResubmitted && !busy;
 
   const toggleSelect = (id: string) => {
-    if (processing) return;
+    if (busy) return;
     setSelectedEvidenceIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -63,6 +72,22 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
   const handleFormCancel = () => {
     setShowRequestForm(false);
   };
+
+  const handleResumeReview = () => {
+    if (selectedEvidenceIds.size === 0 || busy) return;
+    onResumeReview?.(action.id, [...selectedEvidenceIds]);
+  };
+
+  // Clear selections when evidence changes
+  const validSelectedIds = new Set(
+    [...selectedEvidenceIds].filter((id) => {
+      const ev = action.evidence.find((e) => e.id === id);
+      if (!ev) return false;
+      if (hasSelectableForResume) return ev.verification_status === 'Submitted';
+      if (hasSelectableForRequest) return ev.verification_status === 'Under Review';
+      return false;
+    }),
+  );
 
   return (
     <div
@@ -143,15 +168,30 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
             const badge = STATUS_BADGE[ev.verification_status] ?? STATUS_BADGE.Draft;
             const isUnderReview = ev.verification_status === 'Under Review';
             const isRevision = ev.verification_status === 'Additional Information Required';
-            const isSelected = selectedEvidenceIds.has(ev.id);
-            const canSelect = isUnderReview && hasSelectableEvidence && !processing;
+            const isSubmitted = ev.verification_status === 'Submitted';
+            const isSelected = validSelectedIds.has(ev.id);
+
+            // Determine if this evidence is selectable in the current mode
+            const canSelectForRequest = isUnderReview && hasSelectableForRequest && !showRequestForm;
+            const canSelectForResume = isSubmitted && hasSelectableForResume && !showRequestForm;
+            const canSelect = canSelectForRequest || canSelectForResume;
+
+            // Badge label overrides (display-only, not stored)
+            const badgeLabel: string = isRevision
+              ? 'Waiting for Organization'
+              : isSubmitted && isResubmitted
+                ? 'Ready to Resume'
+                : isUnderReview
+                  ? 'Under Review'
+                  : ev.verification_status;
+
             return (
               <div
                 key={ev.id}
                 className="rounded-xl px-4 py-3"
                 style={{
-                  background: isSelected ? 'rgba(212,168,67,0.04)' : 'rgba(255,255,255,0.03)',
-                  border: isSelected ? '1px solid rgba(212,168,67,0.25)' : '1px solid rgba(255,255,255,0.08)',
+                  background: isSelected ? 'rgba(28,116,134,0.04)' : 'rgba(255,255,255,0.03)',
+                  border: isSelected ? '1px solid rgba(28,116,134,0.25)' : '1px solid rgba(255,255,255,0.08)',
                 }}
               >
                 <div className="flex items-start gap-3">
@@ -160,10 +200,10 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
                       type="checkbox"
                       checked={isSelected}
                       onChange={() => toggleSelect(ev.id)}
-                      disabled={processing}
+                      disabled={busy}
                       className="mt-1 flex-shrink-0"
-                      style={{ accentColor: '#D4A843', width: 16, height: 16 }}
-                      aria-label={`Select ${EVIDENCE_TYPE_LABELS[ev.evidence_type] ?? ev.evidence_type} for revision request`}
+                      style={{ accentColor: '#1C7486', width: 16, height: 16 }}
+                      aria-label={`Select ${EVIDENCE_TYPE_LABELS[ev.evidence_type] ?? ev.evidence_type} for ${canSelectForResume ? 'resume review' : 'revision request'}`}
                     />
                   )}
                   <div className="flex-1 min-w-0">
@@ -173,7 +213,7 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
                         className="text-xs font-bold px-2 py-0.5 rounded-full"
                         style={{ background: badge.bg, color: badge.color }}
                       >
-                        {isRevision ? 'Waiting for Organization' : ev.verification_status}
+                        {badgeLabel}
                       </span>
                     </div>
                     {ev.external_url && (
@@ -194,8 +234,8 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
                         <StickyNote size={10} className="inline mr-1" />{ev.submission_notes}
                       </p>
                     )}
-                    {/* Organization-visible instructions for revision evidence */}
-                    {isRevision && ev.organization_visible_notes && (
+                    {/* Organization-visible revision instructions */}
+                    {(isRevision || (isSubmitted && ev.organization_visible_notes)) && ev.organization_visible_notes && (
                       <div
                         className="mt-2 rounded-lg px-3 py-2"
                         style={{ background: 'rgba(212,168,67,0.06)', border: '1px solid rgba(212,168,67,0.15)' }}
@@ -208,8 +248,8 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
                         </p>
                       </div>
                     )}
-                    {/* Internal reviewer notes — visible only to authorized reviewers */}
-                    {isRevision && ev.reviewer_notes && isClaimOwner && (
+                    {/* Internal reviewer notes — visible only to the assigned reviewer */}
+                    {(isRevision || isSubmitted || isUnderReview) && ev.reviewer_notes && isClaimOwner && (
                       <div
                         className="mt-2 rounded-lg px-3 py-2"
                         style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}
@@ -234,18 +274,41 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
         )}
       </div>
 
-      {/* Request Additional Information action */}
-      {hasSelectableEvidence && !showRequestForm && (
+      {/* Resume Review action */}
+      {hasSelectableForResume && !showRequestForm && (
         <div className="mt-5 flex items-center justify-between gap-3">
           <span className="text-xs" style={{ color: 'rgba(255,255,255,0.5)' }}>
-            {selectedEvidenceIds.size} {selectedEvidenceIds.size === 1 ? 'item' : 'items'} selected
+            {validSelectedIds.size} {validSelectedIds.size === 1 ? 'item' : 'items'} selected
+          </span>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ background: 'rgba(28,116,134,0.15)', borderColor: 'rgba(28,116,134,0.4)', color: '#2592A8' }}
+            onClick={handleResumeReview}
+            disabled={busy || validSelectedIds.size === 0}
+            aria-label="Resume review of selected evidence"
+          >
+            {resuming ? (
+              <><Clock size={14} className="animate-spin" /> Resuming…</>
+            ) : (
+              <><Play size={14} /> Resume Review</>
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* Request Additional Information action */}
+      {hasSelectableForRequest && !showRequestForm && (
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <span className="text-xs" style={{ color: 'rgba(255,255,255,0.5)' }}>
+            {validSelectedIds.size} {validSelectedIds.size === 1 ? 'item' : 'items'} selected
           </span>
           <button
             type="button"
             className="btn-primary"
             style={{ background: 'rgba(212,168,67,0.12)', borderColor: 'rgba(212,168,67,0.3)', color: '#D4A843' }}
             onClick={handleStartRequest}
-            disabled={processing || selectedEvidenceIds.size === 0}
+            disabled={busy || validSelectedIds.size === 0}
             aria-label="Request additional information for selected evidence"
           >
             <MessageSquare size={14} /> Request Additional Information
@@ -256,10 +319,17 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
       {/* Read-only indicator */}
       <div className="flex items-center gap-2 mt-5 text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>
         <Eye size={12} /> Read-only review view
-        {isResubmitted && (
+        {isResubmitted && submittedEvidence.length > 0 && (
           <span className="ml-2" style={{ color: 'rgba(28,116,134,0.6)' }}>Ready to Resume Review</span>
         )}
       </div>
+
+      {/* Processing status */}
+      {resuming && (
+        <p className="text-xs text-center mt-3" style={{ color: 'rgba(255,255,255,0.5)' }} role="status" aria-live="polite">
+          Resuming review…
+        </p>
+      )}
     </div>
   );
 }

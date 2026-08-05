@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { ShieldCheck, Clock, FileCheck2, UserCheck, Loader2, AlertCircle, ChevronRight, Inbox } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { getReviewQueue, getReviewAction, type ReviewQueueItem, type ReviewActionDetail } from '../lib/reviewQueueService';
-import { claimActionForReview, requestAdditionalInformation, type ClaimActionForReviewErrorCode, type RequestAdditionalInformationErrorCode } from '../lib/actionMutationService';
+import { claimActionForReview, requestAdditionalInformation, resumeActionReview, type ClaimActionForReviewErrorCode, type RequestAdditionalInformationErrorCode, type ResumeActionReviewErrorCode } from '../lib/actionMutationService';
 import type { EvidenceType } from '../lib/actionWorkflowService';
 import { ClaimReviewModal } from '../components/reviews/ClaimReviewModal';
 import { ReviewActionPanel } from '../components/reviews/ReviewActionPanel';
 import { RequestInformationModal } from '../components/reviews/RequestInformationModal';
+import { ResumeReviewModal } from '../components/reviews/ResumeReviewModal';
 
 type QueueState =
   | { phase: 'loading' }
@@ -31,6 +32,13 @@ type RequestState =
   | { phase: 'idle' }
   | { phase: 'confirming'; action: ReviewActionDetail; evidenceIds: string[]; orgNotes: string; reviewerNotes: string }
   | { phase: 'processing'; action: ReviewActionDetail; evidenceIds: string[]; orgNotes: string; reviewerNotes: string }
+  | { phase: 'success'; message: string }
+  | { phase: 'error'; message: string; reloadAction: boolean };
+
+type ResumeState =
+  | { phase: 'idle' }
+  | { phase: 'confirming'; action: ReviewActionDetail; evidenceIds: string[] }
+  | { phase: 'processing'; action: ReviewActionDetail; evidenceIds: string[] }
   | { phase: 'success'; message: string }
   | { phase: 'error'; message: string; reloadAction: boolean };
 
@@ -75,6 +83,32 @@ const STALE_STATE_CODES: RequestAdditionalInformationErrorCode[] = [
   'REVIEW_NOT_OWNED',
 ];
 
+const RESUME_MESSAGES: Record<ResumeActionReviewErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This review action could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to resume this review.',
+  ACTION_NOT_SUBMITTED: 'This action has not been submitted for verification.',
+  ACTION_NOT_RESUBMITTED: 'This action does not contain revised evidence ready for review.',
+  REVIEW_NOT_CLAIMED: 'This action has not been claimed for review.',
+  REVIEW_NOT_OWNED: 'You are not the assigned reviewer for this action.',
+  NO_EVIDENCE_SELECTED: 'Select at least one submitted evidence record.',
+  EVIDENCE_NOT_FOUND: 'One or more selected evidence records could not be found.',
+  EVIDENCE_ACTION_MISMATCH: 'One or more selected evidence records do not belong to this action.',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'One or more selected evidence records do not belong to this organization.',
+  EVIDENCE_NOT_RESUMABLE: 'One or more selected evidence records can no longer be resumed.',
+  EVIDENCE_REVIEW_STATE_INCONSISTENT: 'One or more evidence records have an invalid review state.',
+  INVALID_ACTION_STATUS: 'This action cannot resume review from its current status.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid review state and could not be updated.',
+  UNEXPECTED_ERROR: 'We could not resume this review. Please try again.',
+};
+
+const RESUME_STALE_CODES: ResumeActionReviewErrorCode[] = [
+  'EVIDENCE_NOT_RESUMABLE',
+  'EVIDENCE_REVIEW_STATE_INCONSISTENT',
+  'REVIEW_NOT_OWNED',
+  'ACTION_NOT_RESUBMITTED',
+];
+
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -89,6 +123,7 @@ export function ReviewQueuePage() {
   const [claimState, setClaimState] = useState<ClaimState>({ phase: 'idle' });
   const [detailState, setDetailState] = useState<DetailState>({ phase: 'idle' });
   const [requestState, setRequestState] = useState<RequestState>({ phase: 'idle' });
+  const [resumeState, setResumeState] = useState<ResumeState>({ phase: 'idle' });
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Check reviewer authorization
@@ -215,6 +250,42 @@ export function ReviewQueuePage() {
     if (requestState.phase === 'processing') return;
     setRequestState({ phase: 'idle' });
   }, [requestState.phase]);
+
+  // Resume Review workflow
+  const handleResumeReview = useCallback(async (_actionId: string, evidenceIds: string[]) => {
+    if (detailState.phase !== 'ready') return;
+    setResumeState({ phase: 'confirming', action: detailState.action, evidenceIds });
+  }, [detailState]);
+
+  const handleResumeConfirm = useCallback(async () => {
+    if (resumeState.phase !== 'confirming') return;
+    const { action, evidenceIds } = resumeState;
+    setResumeState({ phase: 'processing', action, evidenceIds });
+
+    const result = await resumeActionReview({ actionId: action.id, evidenceIds });
+
+    if (result.ok) {
+      setResumeState({ phase: 'success', message: `Review resumed. ${result.evidenceCount} revised evidence item(s) are now Under Review.` });
+      await loadQueue();
+      await reloadDetail(action.id);
+      return;
+    }
+
+    const code = result.error.code;
+    if (RESUME_STALE_CODES.includes(code)) {
+      setResumeState({ phase: 'error', message: RESUME_MESSAGES[code], reloadAction: true });
+      await loadQueue();
+      await reloadDetail(action.id);
+      return;
+    }
+
+    setResumeState({ phase: 'error', message: RESUME_MESSAGES[code], reloadAction: false });
+  }, [resumeState, loadQueue, reloadDetail]);
+
+  const closeResumeModal = useCallback(() => {
+    if (resumeState.phase === 'processing') return;
+    setResumeState({ phase: 'idle' });
+  }, [resumeState.phase]);
 
   // Access denied state
   if (isReviewer === false) {
@@ -489,18 +560,40 @@ export function ReviewQueuePage() {
               action={detailState.action}
               currentUserId={currentUserId}
               onRequestInformation={handleRequestInformation}
+              onResumeReview={handleResumeReview}
               processing={requestState.phase === 'processing'}
+              resuming={resumeState.phase === 'processing'}
             />
           </div>
         </div>
       )}
+      {/* Resume Review confirmation modal */}
+      <ResumeReviewModal
+        open={resumeState.phase === 'confirming' || resumeState.phase === 'processing'}
+        organizationName={resumeState.phase === 'confirming' || resumeState.phase === 'processing' ? resumeState.action.organization_name : ''}
+        actionTitle={resumeState.phase === 'confirming' || resumeState.phase === 'processing' ? resumeState.action.title : ''}
+        actionPillar={resumeState.phase === 'confirming' || resumeState.phase === 'processing' ? resumeState.action.pillar_name : ''}
+        selectedEvidenceCount={resumeState.phase === 'confirming' || resumeState.phase === 'processing' ? resumeState.evidenceIds.length : 0}
+        selectedEvidenceTypes={resumeState.phase === 'confirming' || resumeState.phase === 'processing'
+          ? resumeState.evidenceIds
+              .map((id) => resumeState.action.evidence.find((e) => e.id === id))
+              .filter((e): e is NonNullable<typeof e> => e !== undefined)
+              .map((e) => e.evidence_type)
+          : []}
+        hasRevisionInstructions={resumeState.phase === 'confirming' || resumeState.phase === 'processing'
+          ? resumeState.evidenceIds.some((id) => {
+              const ev = resumeState.action.evidence.find((e) => e.id === id);
+              return ev?.organization_visible_notes !== null && ev?.organization_visible_notes !== undefined;
+            })
+          : false}
+        certificationRequired={resumeState.phase === 'confirming' || resumeState.phase === 'processing' ? resumeState.action.certification_requirement === true : false}
+        disabled={resumeState.phase === 'processing'}
+        onCancel={closeResumeModal}
+        onConfirm={handleResumeConfirm}
+      />
     </div>
   );
 }
-
-/* ============================================================
-   Review Group (section of the queue)
-   ============================================================ */
 
 interface ReviewGroupProps {
   title: string;
@@ -521,7 +614,11 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
           const isMine = item.review_claimed_by === currentUserId;
           const isOther = item.review_claimed_by !== null && item.review_claimed_by !== currentUserId;
           const isRevision = item.status === 'Revision Required';
-          const isResubmitted = item.status === 'Submitted for Verification' && item.review_claimed_by === currentUserId && item.submitted_evidence_count > 0;
+          const hasSubmitted = item.submitted_evidence_count > 0;
+          const hasUnderReview = item.under_review_evidence_count > 0;
+          const isResubmitted = item.status === 'Submitted for Verification' && isMine && hasSubmitted && !hasUnderReview;
+          const isPartiallyResumed = item.status === 'Submitted for Verification' && isMine && hasSubmitted && hasUnderReview;
+          const isReviewInProgress = item.status === 'Submitted for Verification' && isMine && !hasSubmitted && hasUnderReview;
           return (
             <div
               key={item.id}
@@ -550,7 +647,7 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
                   </div>
                 </div>
                 <div className="flex flex-col gap-2 flex-shrink-0">
-                  {isMine && !isRevision && !isResubmitted && (
+                  {isMine && !isRevision && !isResubmitted && !isPartiallyResumed && !isReviewInProgress && (
                     <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(52,180,120,0.12)', color: '#34B478' }}>
                       Review In Progress
                     </span>
@@ -563,6 +660,16 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
                   {isMine && isResubmitted && (
                     <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(28,116,134,0.12)', color: '#2592A8' }}>
                       Revised Evidence Submitted
+                    </span>
+                  )}
+                  {isMine && isPartiallyResumed && (
+                    <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(212,168,67,0.12)', color: '#D4A843' }}>
+                      Review Partially Resumed
+                    </span>
+                  )}
+                  {isMine && isReviewInProgress && (
+                    <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(52,180,120,0.12)', color: '#34B478' }}>
+                      Review In Progress
                     </span>
                   )}
                   {isOther && (

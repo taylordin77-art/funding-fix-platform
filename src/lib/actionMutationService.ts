@@ -1241,3 +1241,188 @@ export async function resubmitRevisedEvidence(input: ResubmitRevisedEvidenceInpu
     message: 'Revised evidence submitted.',
   };
 }
+
+/* ============================================================
+   resume_action_review: Submitted evidence -> Under Review
+   ============================================================ */
+
+export type ResumeActionReviewErrorCode =
+  | 'NOT_AUTHENTICATED'
+  | 'ACTION_NOT_FOUND'
+  | 'NOT_AUTHORIZED'
+  | 'ACTION_NOT_SUBMITTED'
+  | 'ACTION_NOT_RESUBMITTED'
+  | 'REVIEW_NOT_CLAIMED'
+  | 'REVIEW_NOT_OWNED'
+  | 'NO_EVIDENCE_SELECTED'
+  | 'EVIDENCE_NOT_FOUND'
+  | 'EVIDENCE_ACTION_MISMATCH'
+  | 'EVIDENCE_ORGANIZATION_MISMATCH'
+  | 'EVIDENCE_NOT_RESUMABLE'
+  | 'EVIDENCE_REVIEW_STATE_INCONSISTENT'
+  | 'INVALID_ACTION_STATUS'
+  | 'ACTION_STATE_INCONSISTENT'
+  | 'UNEXPECTED_ERROR';
+
+export type ResumeActionReviewResult =
+  | {
+      ok: true;
+      action: PersistedOrganizationAction;
+      evidence: EvidenceRecord[];
+      evidenceCount: number;
+      reviewerId: string;
+      resumedAt: string;
+      message: string;
+    }
+  | {
+      ok: false;
+      error: { code: ResumeActionReviewErrorCode; message: string };
+    };
+
+const RESUME_TOKEN_MAP: Record<string, ResumeActionReviewErrorCode> = {
+  NOT_AUTHENTICATED: 'NOT_AUTHENTICATED',
+  ACTION_NOT_FOUND: 'ACTION_NOT_FOUND',
+  NOT_AUTHORIZED: 'NOT_AUTHORIZED',
+  ACTION_NOT_SUBMITTED: 'ACTION_NOT_SUBMITTED',
+  ACTION_NOT_RESUBMITTED: 'ACTION_NOT_RESUBMITTED',
+  REVIEW_NOT_CLAIMED: 'REVIEW_NOT_CLAIMED',
+  REVIEW_NOT_OWNED: 'REVIEW_NOT_OWNED',
+  NO_EVIDENCE_SELECTED: 'NO_EVIDENCE_SELECTED',
+  EVIDENCE_NOT_FOUND: 'EVIDENCE_NOT_FOUND',
+  EVIDENCE_ACTION_MISMATCH: 'EVIDENCE_ACTION_MISMATCH',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'EVIDENCE_ORGANIZATION_MISMATCH',
+  EVIDENCE_NOT_RESUMABLE: 'EVIDENCE_NOT_RESUMABLE',
+  EVIDENCE_REVIEW_STATE_INCONSISTENT: 'EVIDENCE_REVIEW_STATE_INCONSISTENT',
+  INVALID_ACTION_STATUS: 'INVALID_ACTION_STATUS',
+  ACTION_STATE_INCONSISTENT: 'ACTION_STATE_INCONSISTENT',
+};
+
+const RESUME_SAFE_MESSAGES: Record<ResumeActionReviewErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This review action could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to resume this review.',
+  ACTION_NOT_SUBMITTED: 'This action has not been submitted for verification.',
+  ACTION_NOT_RESUBMITTED: 'This action does not contain revised evidence ready for review.',
+  REVIEW_NOT_CLAIMED: 'This action has not been claimed for review.',
+  REVIEW_NOT_OWNED: 'You are not the assigned reviewer for this action.',
+  NO_EVIDENCE_SELECTED: 'Select at least one submitted evidence record.',
+  EVIDENCE_NOT_FOUND: 'One or more selected evidence records could not be found.',
+  EVIDENCE_ACTION_MISMATCH: 'One or more selected evidence records do not belong to this action.',
+  EVIDENCE_ORGANIZATION_MISMATCH: 'One or more selected evidence records do not belong to this organization.',
+  EVIDENCE_NOT_RESUMABLE: 'One or more selected evidence records can no longer be resumed.',
+  EVIDENCE_REVIEW_STATE_INCONSISTENT: 'One or more evidence records have an invalid review state.',
+  INVALID_ACTION_STATUS: 'This action cannot resume review from its current status.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid review state and could not be updated.',
+  UNEXPECTED_ERROR: 'We could not resume this review. Please try again.',
+};
+
+function mapResumeRpcError(message: string | undefined): ResumeActionReviewErrorCode {
+  if (!message) return 'UNEXPECTED_ERROR';
+  const token = message.split(':')[0].trim();
+  return RESUME_TOKEN_MAP[token] ?? 'UNEXPECTED_ERROR';
+}
+
+export interface ResumeActionReviewInput {
+  actionId: string;
+  evidenceIds: string[];
+}
+
+export async function resumeActionReview(input: ResumeActionReviewInput): Promise<ResumeActionReviewResult> {
+  if (!input.actionId || input.actionId.trim() === '') {
+    return { ok: false, error: { code: 'ACTION_NOT_FOUND', message: RESUME_SAFE_MESSAGES.ACTION_NOT_FOUND } };
+  }
+
+  const uniqueIds = [...new Set(input.evidenceIds.filter((id) => id && id.trim() !== ''))];
+  if (uniqueIds.length === 0) {
+    return { ok: false, error: { code: 'NO_EVIDENCE_SELECTED', message: RESUME_SAFE_MESSAGES.NO_EVIDENCE_SELECTED } };
+  }
+
+  const { data, error } = (await supabase.rpc('resume_action_review', {
+    p_action_id: input.actionId,
+    p_evidence_ids: uniqueIds,
+  })) as { data: unknown; error: { message?: string } | null };
+
+  if (error) {
+    console.error('[actionMutationService] resume_action_review RPC error:', error.message);
+    const code = mapResumeRpcError(error.message);
+    return { ok: false, error: { code, message: RESUME_SAFE_MESSAGES[code] } };
+  }
+
+  if (!data || typeof data !== 'object') {
+    console.error('[actionMutationService] resume RPC returned unexpected shape');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const result = data as Record<string, unknown>;
+  const actionRow = result.action;
+  const evidenceArray = result.evidence;
+  const evidenceCount = result.evidence_count;
+  const reviewerId = result.reviewer_id;
+  const resumedAt = result.resumed_at;
+
+  if (!isActionRow(actionRow)) {
+    console.error('[actionMutationService] resume RPC returned invalid action row');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const action = actionRow as PersistedOrganizationAction;
+  if (action.status !== 'Submitted for Verification') {
+    console.error('[actionMutationService] resume RPC returned action status', action.status, 'expected Submitted for Verification');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (action.review_claimed_by === null || action.review_claimed_by === undefined) {
+    console.error('[actionMutationService] resume RPC returned null review_claimed_by');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (!Array.isArray(evidenceArray)) {
+    console.error('[actionMutationService] resume RPC returned non-array evidence');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  const evidence = (evidenceArray as unknown[]).filter(isEvidenceRow) as EvidenceRecord[];
+  for (const ev of evidence) {
+    if (ev.verification_status !== 'Under Review') {
+      console.error('[actionMutationService] resume RPC returned evidence with status', ev.verification_status, 'expected Under Review');
+      return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+    }
+    if (ev.reviewed_by !== reviewerId) {
+      console.error('[actionMutationService] resume RPC returned evidence reviewed_by mismatch');
+      return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+    }
+    if (!ev.reviewed_at) {
+      console.error('[actionMutationService] resume RPC returned evidence with null reviewed_at');
+      return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+    }
+    if (!ev.submitted_at) {
+      console.error('[actionMutationService] resume RPC returned evidence with null submitted_at');
+      return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+    }
+  }
+
+  if (typeof evidenceCount !== 'number' || evidenceCount !== evidence.length) {
+    console.error('[actionMutationService] resume RPC returned invalid evidence_count');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (typeof reviewerId !== 'string') {
+    console.error('[actionMutationService] resume RPC returned invalid reviewer_id');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  if (typeof resumedAt !== 'string') {
+    console.error('[actionMutationService] resume RPC returned invalid resumed_at');
+    return { ok: false, error: { code: 'UNEXPECTED_ERROR', message: RESUME_SAFE_MESSAGES.UNEXPECTED_ERROR } };
+  }
+
+  return {
+    ok: true,
+    action,
+    evidence,
+    evidenceCount,
+    reviewerId,
+    resumedAt,
+    message: 'Review resumed.',
+  };
+}
