@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ShieldCheck, Clock, FileCheck2, UserCheck, Loader2, AlertCircle, ChevronRight, Inbox } from 'lucide-react';
+import { ShieldCheck, Clock, FileCheck2, UserCheck, Loader2, AlertCircle, ChevronRight, Inbox, CheckCircle2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { getReviewQueue, getReviewAction, type ReviewQueueItem, type ReviewActionDetail } from '../lib/reviewQueueService';
-import { claimActionForReview, requestAdditionalInformation, resumeActionReview, type ClaimActionForReviewErrorCode, type RequestAdditionalInformationErrorCode, type ResumeActionReviewErrorCode } from '../lib/actionMutationService';
+import { claimActionForReview, requestAdditionalInformation, resumeActionReview, verifyAction, type ClaimActionForReviewErrorCode, type RequestAdditionalInformationErrorCode, type ResumeActionReviewErrorCode, type VerifyActionErrorCode } from '../lib/actionMutationService';
 import type { EvidenceType } from '../lib/actionWorkflowService';
 import { ClaimReviewModal } from '../components/reviews/ClaimReviewModal';
 import { ReviewActionPanel } from '../components/reviews/ReviewActionPanel';
 import { RequestInformationModal } from '../components/reviews/RequestInformationModal';
 import { ResumeReviewModal } from '../components/reviews/ResumeReviewModal';
+import { VerifyActionModal } from '../components/reviews/VerifyActionModal';
 
 type QueueState =
   | { phase: 'loading' }
@@ -39,6 +40,13 @@ type ResumeState =
   | { phase: 'idle' }
   | { phase: 'confirming'; action: ReviewActionDetail; evidenceIds: string[] }
   | { phase: 'processing'; action: ReviewActionDetail; evidenceIds: string[] }
+  | { phase: 'success'; message: string }
+  | { phase: 'error'; message: string; reloadAction: boolean };
+
+type VerifyState =
+  | { phase: 'idle' }
+  | { phase: 'confirming'; action: ReviewActionDetail }
+  | { phase: 'processing'; action: ReviewActionDetail }
   | { phase: 'success'; message: string }
   | { phase: 'error'; message: string; reloadAction: boolean };
 
@@ -109,6 +117,33 @@ const RESUME_STALE_CODES: ResumeActionReviewErrorCode[] = [
   'ACTION_NOT_RESUBMITTED',
 ];
 
+const VERIFY_MESSAGES: Record<VerifyActionErrorCode, string> = {
+  NOT_AUTHENTICATED: 'Your session has expired. Please sign in again.',
+  ACTION_NOT_FOUND: 'This action could not be found.',
+  NOT_AUTHORIZED: 'You do not have permission to verify this action.',
+  REVIEW_NOT_CLAIMED: 'This action has not been claimed for review.',
+  REVIEW_NOT_OWNED: 'You are not the assigned reviewer for this action.',
+  ACTION_NOT_SUBMITTED: 'This action has not been submitted for verification.',
+  ACTION_IN_REVISION: 'This action is currently awaiting organization revision.',
+  ACTION_ALREADY_VERIFIED: 'This action has already been verified.',
+  EVIDENCE_REQUIRED: 'This action requires evidence before it can be verified.',
+  NO_APPROVED_EVIDENCE: 'At least one evidence record must be approved before verification.',
+  EVIDENCE_STILL_UNDER_REVIEW: 'All evidence must be reviewed before verification.',
+  EVIDENCE_STILL_SUBMITTED: 'All evidence must be reviewed before verification.',
+  REVISION_ITEMS_OUTSTANDING: 'All revision items must be resolved before verification.',
+  INVALID_ACTION_STATUS: 'This action cannot be verified from its current status.',
+  ACTION_STATE_INCONSISTENT: 'This action has an invalid review state and could not be verified.',
+  UNEXPECTED_ERROR: 'We could not verify this action. Please try again.',
+};
+
+const VERIFY_STALE_CODES: VerifyActionErrorCode[] = [
+  'ACTION_ALREADY_VERIFIED',
+  'REVIEW_NOT_OWNED',
+  'INVALID_ACTION_STATUS',
+  'ACTION_IN_REVISION',
+  'ACTION_NOT_SUBMITTED',
+];
+
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -124,6 +159,7 @@ export function ReviewQueuePage() {
   const [detailState, setDetailState] = useState<DetailState>({ phase: 'idle' });
   const [requestState, setRequestState] = useState<RequestState>({ phase: 'idle' });
   const [resumeState, setResumeState] = useState<ResumeState>({ phase: 'idle' });
+  const [verifyState, setVerifyState] = useState<VerifyState>({ phase: 'idle' });
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Check reviewer authorization
@@ -286,6 +322,42 @@ export function ReviewQueuePage() {
     if (resumeState.phase === 'processing') return;
     setResumeState({ phase: 'idle' });
   }, [resumeState.phase]);
+
+  // Verify Action workflow
+  const handleVerifyAction = useCallback(async (_actionId: string) => {
+    if (detailState.phase !== 'ready') return;
+    setVerifyState({ phase: 'confirming', action: detailState.action });
+  }, [detailState]);
+
+  const handleVerifyConfirm = useCallback(async () => {
+    if (verifyState.phase !== 'confirming') return;
+    const { action } = verifyState;
+    setVerifyState({ phase: 'processing', action });
+
+    const result = await verifyAction(action.id);
+
+    if (result.ok) {
+      setVerifyState({ phase: 'success', message: 'Action verified.' });
+      await loadQueue();
+      await reloadDetail(action.id);
+      return;
+    }
+
+    const code = result.error.code;
+    if (VERIFY_STALE_CODES.includes(code)) {
+      setVerifyState({ phase: 'error', message: VERIFY_MESSAGES[code], reloadAction: true });
+      await loadQueue();
+      await reloadDetail(action.id);
+      return;
+    }
+
+    setVerifyState({ phase: 'error', message: VERIFY_MESSAGES[code], reloadAction: false });
+  }, [verifyState, loadQueue, reloadDetail]);
+
+  const closeVerifyModal = useCallback(() => {
+    if (verifyState.phase === 'processing') return;
+    setVerifyState({ phase: 'idle' });
+  }, [verifyState.phase]);
 
   // Access denied state
   if (isReviewer === false) {
@@ -561,12 +633,71 @@ export function ReviewQueuePage() {
               currentUserId={currentUserId}
               onRequestInformation={handleRequestInformation}
               onResumeReview={handleResumeReview}
+              onVerifyAction={handleVerifyAction}
               processing={requestState.phase === 'processing'}
               resuming={resumeState.phase === 'processing'}
+              verifying={verifyState.phase === 'processing'}
             />
           </div>
         </div>
       )}
+      {/* Verify success banner */}
+      {verifyState.phase === 'success' && (
+        <div
+          className="card-premium p-4 mb-6 flex items-center justify-between gap-4"
+          style={{ borderColor: 'rgba(52,180,120,0.3)' }}
+        >
+          <div className="flex items-center gap-3">
+            <CheckCircle2 size={18} style={{ color: '#34B478' }} />
+            <p className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>{verifyState.message}</p>
+          </div>
+          <button
+            type="button"
+            className="text-xs font-semibold px-3 py-1.5 rounded-full"
+            style={{ color: 'rgba(255,255,255,0.6)', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+            onClick={() => setVerifyState({ phase: 'idle' })}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Verify error banner */}
+      {verifyState.phase === 'error' && (
+        <div
+          className="card-premium p-4 mb-6 flex items-start justify-between gap-4"
+          style={{ borderColor: 'rgba(224,101,107,0.3)' }}
+        >
+          <div className="flex items-start gap-3">
+            <AlertCircle size={18} style={{ color: '#E0656B', marginTop: 2 }} />
+            <p className="text-sm" style={{ color: 'rgba(255,255,255,0.7)' }}>{verifyState.message}</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            className="flex-shrink-0"
+            style={{ color: 'rgba(255,255,255,0.5)' }}
+            onClick={() => setVerifyState({ phase: 'idle' })}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Verify Action confirmation modal */}
+      <VerifyActionModal
+        open={verifyState.phase === 'confirming' || verifyState.phase === 'processing'}
+        organizationName={verifyState.phase === 'confirming' || verifyState.phase === 'processing' ? verifyState.action.organization_name : ''}
+        actionTitle={verifyState.phase === 'confirming' || verifyState.phase === 'processing' ? verifyState.action.title : ''}
+        actionPillar={verifyState.phase === 'confirming' || verifyState.phase === 'processing' ? verifyState.action.pillar_name : ''}
+        approvedEvidenceCount={verifyState.phase === 'confirming' || verifyState.phase === 'processing' ? verifyState.action.approved_evidence_count : 0}
+        certificationRequired={verifyState.phase === 'confirming' || verifyState.phase === 'processing' ? verifyState.action.certification_requirement === true : false}
+        evidenceRequirements={verifyState.phase === 'confirming' || verifyState.phase === 'processing' ? verifyState.action.evidence_requirements : null}
+        disabled={verifyState.phase === 'processing'}
+        onCancel={closeVerifyModal}
+        onConfirm={handleVerifyConfirm}
+      />
+
       {/* Resume Review confirmation modal */}
       <ResumeReviewModal
         open={resumeState.phase === 'confirming' || resumeState.phase === 'processing'}
@@ -647,7 +778,17 @@ function ReviewGroup({ title, items, currentUserId, onClaim, onView }: ReviewGro
                   </div>
                 </div>
                 <div className="flex flex-col gap-2 flex-shrink-0">
-                  {isMine && !isRevision && !isResubmitted && !isPartiallyResumed && !isReviewInProgress && (
+                  {isMine && !isRevision && !isResubmitted && !isPartiallyResumed && !isReviewInProgress && item.verification_ready && (
+                    <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(52,180,120,0.12)', color: '#34B478' }}>
+                      Ready for Verification
+                    </span>
+                  )}
+                  {isMine && !isRevision && !isResubmitted && !isPartiallyResumed && !isReviewInProgress && !item.verification_ready && item.approved_evidence_count > 0 && (
+                    <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(28,116,134,0.12)', color: '#2592A8' }}>
+                      Evidence Partially Approved
+                    </span>
+                  )}
+                  {isMine && !isRevision && !isResubmitted && !isPartiallyResumed && !isReviewInProgress && !item.verification_ready && item.approved_evidence_count === 0 && (
                     <span className="text-xs font-bold px-3 py-1.5 rounded-full" style={{ background: 'rgba(52,180,120,0.12)', color: '#34B478' }}>
                       Review In Progress
                     </span>

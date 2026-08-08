@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ShieldCheck, Clock, FileText, Link as LinkIcon, StickyNote, Eye, MessageSquare, Lock, Play } from 'lucide-react';
+import { ShieldCheck, Clock, FileText, Link as LinkIcon, StickyNote, Eye, MessageSquare, Lock, Play, CheckCircle2 } from 'lucide-react';
 import type { ReviewActionDetail } from '../../lib/reviewQueueService';
 import { EVIDENCE_TYPE_LABELS } from '../../lib/actionEvidenceService';
 import { RequestInformationForm, type RequestInformationFormValues } from './RequestInformationForm';
@@ -9,8 +9,10 @@ interface ReviewActionPanelProps {
   currentUserId: string | null;
   onRequestInformation?: (actionId: string, evidenceIds: string[], orgNotes: string, reviewerNotes: string) => void;
   onResumeReview?: (actionId: string, evidenceIds: string[]) => void;
+  onVerifyAction?: (actionId: string) => void;
   processing?: boolean;
   resuming?: boolean;
+  verifying?: boolean;
 }
 
 function formatDate(iso: string | null): string {
@@ -30,7 +32,7 @@ const STATUS_BADGE: Record<string, { bg: string; color: string }> = {
   Expired: { bg: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' },
 };
 
-export function ReviewActionPanel({ action, currentUserId, onRequestInformation, onResumeReview, processing, resuming }: ReviewActionPanelProps) {
+export function ReviewActionPanel({ action, currentUserId, onRequestInformation, onResumeReview, onVerifyAction, processing, resuming, verifying }: ReviewActionPanelProps) {
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<Set<string>>(new Set());
   const [showRequestForm, setShowRequestForm] = useState(false);
 
@@ -38,7 +40,7 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
   const isClaimOwner = action.review_claimed_by === currentUserId;
   const isRevisionRequired = action.status === 'Revision Required';
   const isResubmitted = action.status === 'Submitted for Verification' && isClaimOwner;
-  const busy = processing || resuming;
+  const busy = processing || resuming || verifying;
 
   const underReviewEvidence = action.evidence.filter((e) => e.verification_status === 'Under Review');
   const submittedEvidence = action.evidence.filter((e) => e.verification_status === 'Submitted');
@@ -312,6 +314,56 @@ export function ReviewActionPanel({ action, currentUserId, onRequestInformation,
             aria-label="Request additional information for selected evidence"
           >
             <MessageSquare size={14} /> Request Additional Information
+          </button>
+        </div>
+      )}
+
+      {/* Verification readiness summary + Verify Action button */}
+      {action.verification_ready && onVerifyAction && (
+        <div className="mt-5">
+          <div
+            className="rounded-xl p-4 mb-3"
+            style={{ background: 'rgba(52,180,120,0.06)', border: '1px solid rgba(52,180,120,0.2)' }}
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <CheckCircle2 size={16} style={{ color: '#34B478' }} />
+              <h3 className="text-sm font-bold text-white">Evidence Review Complete</h3>
+            </div>
+            <p className="text-xs leading-relaxed mb-3" style={{ color: 'rgba(255,255,255,0.6)' }}>
+              All required review steps for this action are complete. Verify the action to record organizational completion.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                <p className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>Approved Evidence</p>
+                <p className="text-sm font-bold" style={{ color: '#34B478' }}>{action.approved_evidence_count}</p>
+              </div>
+              <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                <p className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>Under Review</p>
+                <p className="text-sm font-bold text-white">{action.under_review_evidence_count}</p>
+              </div>
+              <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                <p className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>Still Submitted</p>
+                <p className="text-sm font-bold text-white">{action.submitted_evidence_count}</p>
+              </div>
+              <div className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                <p className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>Revision Items Outstanding</p>
+                <p className="text-sm font-bold text-white">{action.revision_required_evidence_count + action.unresolved_revision_draft_count}</p>
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-primary w-full"
+            style={{ background: 'rgba(52,180,120,0.15)', borderColor: 'rgba(52,180,120,0.4)', color: '#34B478' }}
+            onClick={() => onVerifyAction(action.id)}
+            disabled={busy}
+            aria-label="Verify this action"
+          >
+            {verifying ? (
+              <><Clock size={14} className="animate-spin" /> Verifying…</>
+            ) : (
+              <><ShieldCheck size={14} /> Verify Action</>
+            )}
           </button>
         </div>
       )}

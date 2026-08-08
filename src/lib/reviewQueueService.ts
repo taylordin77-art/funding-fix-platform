@@ -187,8 +187,8 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
   if (actionIds.length > 0) {
     const { data: evData, error: evError } = (await supabase
       .from('action_evidence')
-      .select('action_id, verification_status')
-      .in('action_id', actionIds)) as { data: { action_id: string; verification_status: string }[] | null; error: { message?: string } | null };
+      .select('action_id, verification_status, organization_visible_notes')
+      .in('action_id', actionIds)) as { data: { action_id: string; verification_status: string; organization_visible_notes: string | null }[] | null; error: { message?: string } | null };
 
     if (evError) {
       console.error('[reviewQueueService] evidence count query error:', evError.message);
@@ -202,6 +202,8 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
           revisionRequiredCounts[ev.action_id] = (revisionRequiredCounts[ev.action_id] ?? 0) + 1;
         } else if (ev.verification_status === 'Approved') {
           approvedCounts[ev.action_id] = (approvedCounts[ev.action_id] ?? 0) + 1;
+        } else if (ev.verification_status === 'Draft' && ev.organization_visible_notes) {
+          unresolvedDraftCounts[ev.action_id] = (unresolvedDraftCounts[ev.action_id] ?? 0) + 1;
         }
       }
     }
