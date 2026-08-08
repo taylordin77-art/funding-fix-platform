@@ -29,12 +29,50 @@ export interface ReviewQueueItem {
   submitted_evidence_count: number;
   under_review_evidence_count: number;
   revision_required_evidence_count: number;
+  approved_evidence_count: number;
+  unresolved_revision_draft_count: number;
+  verification_ready: boolean;
   review_claimed_by: string | null;
   review_claimed_at: string | null;
 }
 
 export interface ReviewActionDetail extends ReviewQueueItem {
   evidence: EvidenceRecord[];
+}
+
+/* ============================================================
+   V1 Verification Readiness Rule
+   ============================================================
+
+   verificationReady is true when:
+   - evidence_required = false (no evidence needed)
+   - OR evidence_required = true AND:
+     approved_count >= 1
+     under_review_count = 0
+     submitted_count = 0
+     revision_required_count = 0
+     unresolved_revision_draft_count = 0
+
+   An "unresolved revision draft" is a Draft evidence record with non-null
+   organization_visible_notes (returned revision item).
+   ============================================================ */
+
+export function computeVerificationReady(params: {
+  evidenceRequired: boolean | null;
+  approvedCount: number;
+  underReviewCount: number;
+  submittedCount: number;
+  revisionRequiredCount: number;
+  unresolvedRevisionDraftCount: number;
+}): boolean {
+  if (params.evidenceRequired !== true) return true;
+  return (
+    params.approvedCount >= 1 &&
+    params.underReviewCount === 0 &&
+    params.submittedCount === 0 &&
+    params.revisionRequiredCount === 0 &&
+    params.unresolvedRevisionDraftCount === 0
+  );
 }
 
 export type ReviewQueueErrorCode =
@@ -143,6 +181,8 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
   let submittedCounts: Record<string, number> = {};
   let underReviewCounts: Record<string, number> = {};
   let revisionRequiredCounts: Record<string, number> = {};
+  let approvedCounts: Record<string, number> = {};
+  let unresolvedDraftCounts: Record<string, number> = {};
 
   if (actionIds.length > 0) {
     const { data: evData, error: evError } = (await supabase
@@ -160,6 +200,8 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
           underReviewCounts[ev.action_id] = (underReviewCounts[ev.action_id] ?? 0) + 1;
         } else if (ev.verification_status === 'Additional Information Required') {
           revisionRequiredCounts[ev.action_id] = (revisionRequiredCounts[ev.action_id] ?? 0) + 1;
+        } else if (ev.verification_status === 'Approved') {
+          approvedCounts[ev.action_id] = (approvedCounts[ev.action_id] ?? 0) + 1;
         }
       }
     }
@@ -181,6 +223,16 @@ export async function getReviewQueue(): Promise<ReviewQueueResult> {
     submitted_evidence_count: submittedCounts[r.id] ?? 0,
     under_review_evidence_count: underReviewCounts[r.id] ?? 0,
     revision_required_evidence_count: revisionRequiredCounts[r.id] ?? 0,
+    approved_evidence_count: approvedCounts[r.id] ?? 0,
+    unresolved_revision_draft_count: unresolvedDraftCounts[r.id] ?? 0,
+    verification_ready: computeVerificationReady({
+      evidenceRequired: r.evidence_required,
+      approvedCount: approvedCounts[r.id] ?? 0,
+      underReviewCount: underReviewCounts[r.id] ?? 0,
+      submittedCount: submittedCounts[r.id] ?? 0,
+      revisionRequiredCount: revisionRequiredCounts[r.id] ?? 0,
+      unresolvedRevisionDraftCount: unresolvedDraftCounts[r.id] ?? 0,
+    }),
     review_claimed_by: r.review_claimed_by,
     review_claimed_at: r.review_claimed_at,
   }));
@@ -238,11 +290,24 @@ export async function getReviewAction(actionId: string): Promise<ReviewActionDet
   let submittedCount = 0;
   let underReviewCount = 0;
   let revisionRequiredCount = 0;
+  let approvedCount = 0;
+  let unresolvedDraftCount = 0;
   for (const ev of evidence) {
     if (ev.verification_status === 'Submitted') submittedCount++;
     else if (ev.verification_status === 'Under Review') underReviewCount++;
     else if (ev.verification_status === 'Additional Information Required') revisionRequiredCount++;
+    else if (ev.verification_status === 'Approved') approvedCount++;
+    else if (ev.verification_status === 'Draft' && ev.organization_visible_notes) unresolvedDraftCount++;
   }
+
+  const verificationReady = computeVerificationReady({
+    evidenceRequired: row.evidence_required,
+    approvedCount,
+    underReviewCount,
+    submittedCount,
+    revisionRequiredCount,
+    unresolvedRevisionDraftCount: unresolvedDraftCount,
+  });
 
   const action: ReviewActionDetail = {
     id: row.id,
@@ -260,6 +325,9 @@ export async function getReviewAction(actionId: string): Promise<ReviewActionDet
     submitted_evidence_count: submittedCount,
     under_review_evidence_count: underReviewCount,
     revision_required_evidence_count: revisionRequiredCount,
+    approved_evidence_count: approvedCount,
+    unresolved_revision_draft_count: unresolvedDraftCount,
+    verification_ready: verificationReady,
     review_claimed_by: row.review_claimed_by,
     review_claimed_at: row.review_claimed_at,
     evidence,
